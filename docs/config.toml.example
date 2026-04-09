@@ -1,0 +1,51 @@
+# GraphSAST configuration file
+#
+# Place this file at either:
+#   ~/.graphsast/config.toml          (user-global, applies to all projects)
+#   <project>/.graphsast/config.toml  (project-local, overrides user-global)
+#
+# Environment variables override config files:
+#   GRAPHSAST_LLM__MODEL=qwen2.5:14b graphsast scan .
+#
+# CLI flags override everything:
+#   graphsast scan . --llm-model qwen2.5:14b
+
+# ── LLM backend ───────────────────────────────────────────────────────────────
+[llm]
+# backend  = "ollama"                # "ollama" (default) or "claude"
+# model   = "llama3.1"               # Ollama model  OR  "claude-opus-4-6" for Claude
+# base_url = "http://localhost:11434" # Ollama server URL (ollama backend only)
+# claude_api_key = ""                # Anthropic API key (claude backend; default: $ANTHROPIC_API_KEY)
+# timeout  = 300.0                   # Per-request timeout in seconds
+# temperature = 0.1                  # Sampling temperature (lower = more deterministic)
+# num_ctx  = 8192                    # Context window size (tokens)
+# health_check_timeout = 5.0         # Timeout for the Ollama reachability probe
+# max_entry_points = 0               # Phase 1A entry points to analyse (0 = all)
+# phase1a_max_turns = 8              # Max LLM turns per entry point in Phase 1A
+# phase1b_max_turns_l2 = 5           # Max turns for Phase 1B layer-2 validation
+# phase1b_max_turns_l3 = 3           # Max turns for Phase 1B layer-3 micro-task
+
+# ── Vulnerability DB ──────────────────────────────────────────────────────────
+[vulndb]
+# sources = ["builtin", "custom", "semgrep", "wstg", "lang_sigs"]
+# semgrep_rules_repo = "https://github.com/semgrep/semgrep-rules"
+# semgrep_cache_dir  = "~/.graphsast/cache/semgrep-rules"  # set to override default
+
+# ── Semgrep runner ────────────────────────────────────────────────────────────
+[semgrep]
+# rules_per_file  = 200   # Rules bundled per temp file
+# timeout         = 300   # Semgrep CLI execution timeout (seconds)
+# message_max_len = 500   # Truncate semgrep rule messages to this length
+
+# ── Analysis ──────────────────────────────────────────────────────────────────
+[analysis]
+# taint_max_depth  = 10   # Max BFS hops for source→sink path finding
+# line_bucket_size = 5    # Lines window for deduplicating co-located findings
+
+# ── Output ────────────────────────────────────────────────────────────────────
+[output]
+# format = "markdown"   # Default report format: markdown | json | sarif
+
+# ── Paths ─────────────────────────────────────────────────────────────────────
+[paths]
+# db_subdir = ".graphsast"   # Subdirectory name under scan target for graph.db / vulns.db

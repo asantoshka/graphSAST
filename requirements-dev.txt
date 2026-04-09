@@ -1,0 +1,8 @@
+# GraphSAST — development / test dependencies
+#
+# Install alongside core requirements:
+#   pip install -r requirements.txt -r requirements-dev.txt
+
+pytest>=8.0,<9
+pytest-asyncio>=0.23,<1
+ruff>=0.3.0,<1

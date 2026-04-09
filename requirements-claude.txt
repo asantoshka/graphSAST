@@ -1,0 +1,6 @@
+# GraphSAST — Anthropic Claude backend
+#
+# Install alongside core requirements:
+#   pip install -r requirements.txt -r requirements-claude.txt
+
+anthropic>=0.40.0,<1

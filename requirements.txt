@@ -1,0 +1,40 @@
+# GraphSAST — Python dependencies
+#
+# Install:
+#   pip install -r requirements.txt
+#
+# Optional LLM backends (install whichever you need):
+#   pip install -r requirements.txt -r requirements-claude.txt
+#   pip install -r requirements.txt -r requirements-openai.txt
+#   pip install -r requirements.txt -r requirements-bedrock.txt
+#
+# Dev / test:
+#   pip install -r requirements.txt -r requirements-dev.txt
+
+# ── Core runtime ───────────────────────────────────────────────────────────────
+# MCP server/client support
+mcp>=1.0.0,<2
+fastmcp>=0.1.0,<2
+
+# Tree-sitter parsing (Python, JS, TS, C#, Java, Go, …)
+tree-sitter>=0.23.0,<1
+tree-sitter-language-pack>=0.3.0,<1
+
+# Graph analysis
+networkx>=3.2,<4
+
+# HTTP client (Ollama backend)
+httpx>=0.27
+
+# File watching (incremental graph builds)
+watchdog>=4.0.0,<6
+
+# CLI framework
+typer>=0.12,<1
+
+# Config and data validation
+pydantic>=2.0,<3
+pydantic-settings>=2.0,<3
+
+# YAML custom rules
+pyyaml>=6.0
