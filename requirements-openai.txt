@@ -1,4 +1,4 @@
-# GraphSAST — OpenAI backend (coming soon)
+# GraphSAST — OpenAI backend
 #
 # Install alongside core requirements:
 #   pip install -r requirements.txt -r requirements-openai.txt

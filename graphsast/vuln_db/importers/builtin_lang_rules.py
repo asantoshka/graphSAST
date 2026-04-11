@@ -1,13 +1,14 @@
 """Built-in language support rules.
 
-Seeds arg_node_types, entry_point_patterns, and language_capabilities
-for supported languages. Custom rules can override any row by using
-the same id (INSERT OR REPLACE).
+Seeds arg_node_types, entry_point_patterns, entry_point_strategies, and
+language_capabilities for supported languages. Custom rules can override
+any row by using the same id (INSERT OR REPLACE).
 
 Adding a new language:
   1. Add rows to ARG_NODE_TYPES for the language's tree-sitter node names
   2. Add rows to ENTRY_POINT_PATTERNS for its decorator/annotation patterns
-  3. Add rows to LANGUAGE_CAPABILITIES describing what's supported
+  3. Add rows to ENTRY_POINT_STRATEGIES to describe how to walk the AST
+  4. Add rows to LANGUAGE_CAPABILITIES describing what's supported
   No code changes needed.
 """
 
@@ -445,6 +446,16 @@ ENTRY_POINT_PATTERNS: list[dict] = [
      "notes": "Celery task"},
     {"id": "py-ep-api-view","language": "python", "pattern": "api_view",  "match_type": "substring",
      "notes": "DRF @api_view"},
+    # aiohttp call-registration style: app.router.add_route / add_get / add_post / etc.
+    {"id": "py-ep-add-route", "language": "python", "pattern": ".add_route(", "match_type": "substring",
+     "notes": "aiohttp app.router.add_route(method, path, handler)"},
+    {"id": "py-ep-add-get",   "language": "python", "pattern": ".add_get(",   "match_type": "substring",
+     "notes": "aiohttp router.add_get(path, handler)"},
+    {"id": "py-ep-add-post",  "language": "python", "pattern": ".add_post(",  "match_type": "substring",
+     "notes": "aiohttp router.add_post(path, handler)"},
+    {"id": "py-ep-add-put",   "language": "python", "pattern": ".add_put(",   "match_type": "substring"},
+    {"id": "py-ep-add-patch", "language": "python", "pattern": ".add_patch(", "match_type": "substring"},
+    {"id": "py-ep-add-delete","language": "python", "pattern": ".add_delete(","match_type": "substring"},
 
     # ── JavaScript / TypeScript ───────────────────────────────────────────────
     {"id": "js-ep-express-get",    "language": "javascript", "pattern": r"(app|router)\.(get|post|put|patch|delete|use|all)\(", "match_type": "regex"},
@@ -489,6 +500,168 @@ ENTRY_POINT_PATTERNS: list[dict] = [
 # ──────────────────────────────────────────────────────────────────────────────
 # language_capabilities
 # ──────────────────────────────────────────────────────────────────────────────
+# ENTRY_POINT_STRATEGIES
+#
+# Tells TaintMarker HOW to walk the AST for each language.
+# The engine has three generic walkers — no language-specific code.
+#
+# Strategy configs (JSON keys by strategy type):
+#
+#   wrapped_decorator:
+#     container_node   — node that wraps both decorator and function (e.g. "decorated_definition")
+#     decorator_type   — child node type for decorator text       (e.g. "decorator")
+#     function_type    — child node type for the function          (e.g. "function_definition")
+#     name_child_type  — node type of the function name identifier  (e.g. "identifier")
+#
+#   annotated_function:
+#     function_node         — the method/function declaration node type (e.g. "method_declaration")
+#     annotation_container  — child node holding annotations (e.g. "modifiers"); null if annotations
+#                             are direct children of function_node
+#     annotation_types      — list of node types that are annotations (e.g. ["annotation","marker_annotation"])
+#     name_field            — field name on function_node for the method name  (e.g. "name")
+#
+#   call_registration:
+#     call_node             — the call AST node type        (e.g. "call_expression")
+#     callee_field          — field name of the callee       (e.g. "function")
+#     args_field            — field name of the argument list (e.g. "arguments")
+#     handler_types         — arg node types that represent handlers (e.g. ["identifier","selector_expression"])
+#     selector_name_field   — for selector-type handlers, which field is the function name (e.g. "field")
+#     append_paren          — append "(" to callee before matching patterns (true for most languages)
+# ──────────────────────────────────────────────────────────────────────────────
+
+ENTRY_POINT_STRATEGIES: list[dict] = [
+    # ── Python: decorated_definition wraps decorator + function ───────────────
+    {
+        "id": "python-ep-strategy",
+        "language": "python",
+        "strategy": "wrapped_decorator",
+        "config": {
+            "container_node":  "decorated_definition",
+            "decorator_type":  "decorator",
+            "function_type":   "function_definition",
+            "name_child_type": "identifier",
+        },
+        "notes": "Python decorator: @app.route / @click.command / etc.",
+    },
+    # ── Python: aiohttp / call-registration style ─────────────────────────────
+    {
+        "id": "python-ep-strategy-aiohttp",
+        "language": "python",
+        "strategy": "call_registration",
+        "config": {
+            "call_node":            "call",
+            "callee_field":         "function",
+            "args_field":           "arguments",
+            "handler_types":        ["attribute", "identifier"],
+            "inline_handler_types": [],
+            "selector_name_field":  "attribute",
+            "append_paren":         True,
+        },
+        "notes": "aiohttp: app.router.add_route/add_get/add_post(path, handler)",
+    },
+    # ── Java: Spring MVC annotations via modifiers container ──────────────────
+    {
+        "id": "java-ep-strategy",
+        "language": "java",
+        "strategy": "annotated_function",
+        "config": {
+            "function_node":         "method_declaration",
+            "annotation_container":  "modifiers",
+            "annotation_types":      ["annotation", "marker_annotation"],
+            "name_field":            "name",
+        },
+        "notes": "Java Spring: @GetMapping / @PostMapping / @RequestMapping",
+    },
+    # ── TypeScript: NestJS decorators (direct child of method_definition) ─────
+    {
+        "id": "typescript-ep-strategy-nestjs",
+        "language": "typescript",
+        "strategy": "annotated_function",
+        "config": {
+            "function_node":         "method_definition",
+            "annotation_container":  None,
+            "annotation_types":      ["decorator"],
+            "name_field":            "name",
+        },
+        "notes": "TypeScript NestJS: @Get() / @Post() decorators on class methods",
+    },
+    # ── TypeScript + JavaScript: Express call-site registration ───────────────
+    {
+        "id": "typescript-ep-strategy-express",
+        "language": "typescript",
+        "strategy": "call_registration",
+        "config": {
+            "call_node":              "call_expression",
+            "callee_field":           "function",
+            "args_field":             "arguments",
+            "handler_types":          ["identifier", "member_expression"],
+            "inline_handler_types":   ["arrow_function", "function_expression"],
+            "selector_name_field":    "property",
+            "append_paren":           True,
+        },
+        "notes": "TypeScript Express: app.get('/path', handler) or app.get('/path', (req,res)=>{})",
+    },
+    {
+        "id": "javascript-ep-strategy-express",
+        "language": "javascript",
+        "strategy": "call_registration",
+        "config": {
+            "call_node":              "call_expression",
+            "callee_field":           "function",
+            "args_field":             "arguments",
+            "handler_types":          ["identifier", "member_expression"],
+            "inline_handler_types":   ["arrow_function", "function_expression"],
+            "selector_name_field":    "property",
+            "append_paren":           True,
+        },
+        "notes": "JavaScript Express: app.get('/path', handler) or router.post('/path', function(req,res){})",
+    },
+    # ── Go: http.HandleFunc / gin / gorilla-mux call-site registration ────────
+    {
+        "id": "go-ep-strategy",
+        "language": "go",
+        "strategy": "call_registration",
+        "config": {
+            "call_node":           "call_expression",
+            "callee_field":        "function",
+            "args_field":          "arguments",
+            "handler_types":       ["identifier", "selector_expression"],
+            "selector_name_field": "field",
+            "append_paren":        True,
+        },
+        "notes": "Go: http.HandleFunc, r.GET, mux.Handle, etc.",
+    },
+    # ── C#: ASP.NET MVC attribute-annotated actions ───────────────────────────
+    {
+        "id": "csharp-ep-strategy-mvc",
+        "language": "csharp",
+        "strategy": "annotated_function",
+        "config": {
+            "function_node":         "method_declaration",
+            "annotation_container":  "attribute_list",
+            "annotation_types":      ["attribute"],
+            "name_field":            "name",
+        },
+        "notes": "C# ASP.NET MVC: [HttpGet] / [HttpPost] / [Route] on controller methods",
+    },
+    # ── C#: Minimal API call-site registration ────────────────────────────────
+    {
+        "id": "csharp-ep-strategy-minimal",
+        "language": "csharp",
+        "strategy": "call_registration",
+        "config": {
+            "call_node":           "invocation_expression",
+            "callee_field":        "function",
+            "args_field":          "argument_list",
+            "handler_types":       ["identifier", "member_access_expression"],
+            "selector_name_field": "name",
+            "append_paren":        True,
+        },
+        "notes": "C# Minimal API: app.MapGet / app.MapPost / etc.",
+    },
+]
+
+# ──────────────────────────────────────────────────────────────────────────────
 
 LANGUAGE_CAPABILITIES: list[dict] = [
     # Python — full support
@@ -518,13 +691,13 @@ LANGUAGE_CAPABILITIES: list[dict] = [
     # Java
     {"id": "java-parse",      "language": "java",       "capability": "structural_parsing",   "status": "supported", "description": "Extracts nodes and edges via tree-sitter"},
     {"id": "java-arg",        "language": "java",       "capability": "arg_classification",   "status": "supported", "description": "Classifies string_literal, binary_expression +, identifier"},
-    {"id": "java-entry",      "language": "java",       "capability": "entry_point_detection","status": "partial",   "description": "Detects Spring MVC annotations (@GetMapping, @RequestMapping); annotation AST walk not yet implemented"},
+    {"id": "java-entry",      "language": "java",       "capability": "entry_point_detection","status": "supported", "description": "Detects Spring MVC annotations (@GetMapping, @PostMapping, @RequestMapping) via annotation AST walker"},
     {"id": "java-taint",      "language": "java",       "capability": "taint_annotation",     "status": "partial",   "description": "Annotation works; Java-specific signatures not yet included"},
 
     # Go
     {"id": "go-parse",        "language": "go",         "capability": "structural_parsing",   "status": "supported", "description": "Extracts nodes and edges via tree-sitter"},
     {"id": "go-arg",          "language": "go",         "capability": "arg_classification",   "status": "supported", "description": "Classifies interpreted/raw string literals, binary + expression"},
-    {"id": "go-entry",        "language": "go",         "capability": "entry_point_detection","status": "planned",   "description": "Go uses function registration (http.HandleFunc), no decorator AST walk yet"},
+    {"id": "go-entry",        "language": "go",         "capability": "entry_point_detection","status": "supported", "description": "Detects http.HandleFunc, gin/mux route registration via call-site AST walker"},
     {"id": "go-taint",        "language": "go",         "capability": "taint_annotation",     "status": "partial",   "description": "Annotation works; Go-specific signatures not yet included"},
 
     # C#
@@ -545,12 +718,16 @@ def load_builtin_lang_rules(vuln_db: VulnStore) -> dict[str, int]:
     for row in ENTRY_POINT_PATTERNS:
         vuln_db.upsert_entry_point_pattern(row)
 
+    for row in ENTRY_POINT_STRATEGIES:
+        vuln_db.upsert_entry_point_strategy(row)
+
     for row in LANGUAGE_CAPABILITIES:
         vuln_db.upsert_capability(row)
 
     vuln_db.commit()
     return {
-        "arg_node_types": len(ARG_NODE_TYPES),
-        "entry_point_patterns": len(ENTRY_POINT_PATTERNS),
-        "language_capabilities": len(LANGUAGE_CAPABILITIES),
+        "arg_node_types":          len(ARG_NODE_TYPES),
+        "entry_point_patterns":    len(ENTRY_POINT_PATTERNS),
+        "entry_point_strategies":  len(ENTRY_POINT_STRATEGIES),
+        "language_capabilities":   len(LANGUAGE_CAPABILITIES),
     }

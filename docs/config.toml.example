@@ -12,18 +12,33 @@
 
 # ── LLM backend ───────────────────────────────────────────────────────────────
 [llm]
-# backend  = "ollama"                # "ollama" (default) or "claude"
-# model   = "llama3.1"               # Ollama model  OR  "claude-opus-4-6" for Claude
+# backend  = "ollama"                # "ollama" (default), "claude", "openai", or "bedrock"
+# model   = "llama3.1"               # Model name — auto-upgraded per backend when left as default:
+#                                    #   ollama  → "llama3.1"
+#                                    #   claude  → "claude-opus-4-6"
+#                                    #   openai  → "gpt-4o"
+#                                    #   bedrock → "anthropic.claude-3-5-sonnet-20241022-v2:0"
 # base_url = "http://localhost:11434" # Ollama server URL (ollama backend only)
-# claude_api_key = ""                # Anthropic API key (claude backend; default: $ANTHROPIC_API_KEY)
 # timeout  = 300.0                   # Per-request timeout in seconds
 # temperature = 0.1                  # Sampling temperature (lower = more deterministic)
-# num_ctx  = 8192                    # Context window size (tokens)
+# num_ctx  = 8192                    # Context window size (tokens, ollama only)
 # health_check_timeout = 5.0         # Timeout for the Ollama reachability probe
 # max_entry_points = 0               # Phase 1A entry points to analyse (0 = all)
 # phase1a_max_turns = 8              # Max LLM turns per entry point in Phase 1A
 # phase1b_max_turns_l2 = 5           # Max turns for Phase 1B layer-2 validation
 # phase1b_max_turns_l3 = 3           # Max turns for Phase 1B layer-3 micro-task
+
+# Anthropic (claude backend)
+# claude_api_key = ""                # Anthropic API key (default: $ANTHROPIC_API_KEY)
+
+# OpenAI (openai backend)
+# openai_api_key = ""                # OpenAI API key (default: $OPENAI_API_KEY)
+
+# AWS Bedrock (bedrock backend)
+# bedrock_region       = "us-east-1" # AWS region
+# bedrock_access_key   = ""          # AWS access key ID (default: $AWS_ACCESS_KEY_ID)
+# bedrock_secret_key   = ""          # AWS secret access key (default: $AWS_SECRET_ACCESS_KEY)
+# bedrock_session_token = ""         # Temporary session token (optional)
 
 # ── Vulnerability DB ──────────────────────────────────────────────────────────
 [vulndb]

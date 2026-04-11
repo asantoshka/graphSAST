@@ -1,7 +1,7 @@
 # Adding Language Support to GraphSAST
 
 GraphSAST language support is **data-driven** — adding a new language requires no code changes.
-You add rows to three data tables (plus optional taint signatures) and the engine handles the rest.
+You add rows to four data tables (plus optional taint signatures) and the engine handles the rest.
 
 ---
 
@@ -9,7 +9,7 @@ You add rows to three data tables (plus optional taint signatures) and the engin
 
 | File | What it controls |
 |------|-----------------|
-| `graphsast/vuln_db/importers/builtin_lang_rules.py` | AST node types, entry-point patterns, capability declarations |
+| `graphsast/vuln_db/importers/builtin_lang_rules.py` | AST node types, entry-point patterns, **entry-point strategies**, capability declarations |
 | `graphsast/vuln_db/importers/lang_sigs.py` | Taint sources, sinks, and sanitizers for JS/TS/C# |
 | `graphsast/vuln_db/importers/owasp_wstg.py` | OWASP WSTG vuln classes + Python web-framework taint sigs |
 
@@ -99,6 +99,88 @@ Entry-point patterns identify functions that are called by an external actor (HT
 | Spring (Java) | `@GetMapping`, `@PostMapping` | `@GetMapping("/users")` |
 | Flask (Python) | `.route(`, `.get(`, `.post(` | `@app.route('/users')` |
 | Gin (Go) | `r.GET(`, `r.POST(` | `r.GET("/users", handler)` |
+
+---
+
+## Step 2b — ENTRY_POINT_STRATEGIES in `builtin_lang_rules.py`
+
+This is the step that was previously missing and required code changes for each new language.
+A strategy tells the engine **how to walk the AST** to find entry-point functions.
+Without a strategy row the patterns in Step 2 are never consulted.
+
+Three strategy types cover all known paradigms:
+
+| Strategy | Paradigm | Examples |
+|----------|----------|---------|
+| `wrapped_decorator` | Function wrapped inside a container node alongside its decorators | Python `decorated_definition` |
+| `annotated_function` | Method/function node has an annotation container child | Java `modifiers`, C# `attribute_list`, TypeScript `decorator` |
+| `call_registration` | A call expression registers a handler function as a route | Go `http.HandleFunc`, Express `app.get`, C# `app.MapGet` |
+
+### Strategy config reference
+
+#### `wrapped_decorator`
+
+```python
+{
+    "id":       "LANG-ep-strategy",
+    "language": "ruby",
+    "strategy": "wrapped_decorator",
+    "config": {
+        "container_node":  "<node wrapping decorator+function>",  # e.g. "decorated_definition"
+        "decorator_type":  "<node type of the decorator child>",  # e.g. "decorator"
+        "function_type":   "<node type of the function child>",   # e.g. "function_definition"
+        "name_child_type": "<node type of the name identifier>",  # e.g. "identifier"
+    },
+}
+```
+
+#### `annotated_function`
+
+```python
+{
+    "id":       "LANG-ep-strategy",
+    "language": "kotlin",
+    "strategy": "annotated_function",
+    "config": {
+        "function_node":         "<method declaration node type>",    # e.g. "function_declaration"
+        "annotation_container":  "<child node grouping annotations>", # e.g. "modifiers" — set to null if annotations are direct children
+        "annotation_types":      ["<annotation node type>", ...],     # e.g. ["annotation"]
+        "name_field":            "<field name for the method name>",  # e.g. "name"
+    },
+}
+```
+
+#### `call_registration`
+
+```python
+{
+    "id":       "LANG-ep-strategy",
+    "language": "php",
+    "strategy": "call_registration",
+    "config": {
+        "call_node":           "<call expression node type>",       # e.g. "call_expression"
+        "callee_field":        "<field name of the callee>",        # e.g. "function"
+        "args_field":          "<field name of the argument list>", # e.g. "arguments"
+        "handler_types":          ["<handler arg node type>", ...],    # e.g. ["identifier"] — named refs
+        "inline_handler_types":   ["<inline function node type>", ...], # e.g. ["arrow_function","function_expression"] — anonymous handlers; returns @line:N:M key
+        "selector_name_field":    "<field for name in selector nodes>",  # e.g. "field" — omit if none
+        "append_paren":           True,  # True if patterns include "(" (e.g. "r.GET(")
+    },
+}
+```
+
+### How to find tree-sitter field names
+
+```bash
+python - <<'EOF'
+from tree_sitter_languages import get_parser
+parser = get_parser("go")
+tree = parser.parse(b'http.HandleFunc("/", myHandler)')
+print(tree.root_node.sexp())
+EOF
+```
+
+Look at the `field_name:` labels in the S-expression output — those are the field names to use in `callee_field`, `args_field`, `name_field`, etc.
 
 ---
 
@@ -208,6 +290,24 @@ from .my_lang_sigs import load_my_lang_sigs
 {"id": "rb-ep-rails-action",   "language": "ruby", "pattern": "def ",   "match_type": "substring", "notes": "Rails controller actions — all public methods"},
 ```
 
+### 2b. ENTRY_POINT_STRATEGIES
+
+```python
+# Sinatra: route blocks are call registrations (get "/path" do ... end)
+{
+    "id": "ruby-ep-strategy-sinatra",
+    "language": "ruby",
+    "strategy": "call_registration",
+    "config": {
+        "call_node":    "method_add_block",  # Sinatra route block
+        "callee_field": "method",
+        "args_field":   "method_add_arg",
+        "handler_types": [],                 # handler is the block itself — no name
+        "append_paren": False,
+    },
+},
+```
+
 ### 3. LANGUAGE_CAPABILITIES
 
 ```python
@@ -222,7 +322,8 @@ from .my_lang_sigs import load_my_lang_sigs
 ## Checklist
 
 - [ ] `ARG_NODE_TYPES` entries added (node types verified against tree-sitter output)
-- [ ] `ENTRY_POINT_PATTERNS` entries added
+- [ ] `ENTRY_POINT_PATTERNS` entries added (patterns verified against real source files)
+- [ ] `ENTRY_POINT_STRATEGIES` entry added (verify field names with tree-sitter S-expression dump)
 - [ ] `LANGUAGE_CAPABILITIES` entries added with accurate `status`
 - [ ] Taint signatures added (sources, sinks, sanitizers)
 - [ ] Loader wired up (if new file)

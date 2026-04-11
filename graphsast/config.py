@@ -39,17 +39,27 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 # ──────────────────────────────────────────────────────────────────────────────
 
 class LLMSettings(BaseSettings):
-    """Ollama / LLM backend settings."""
+    """LLM backend settings (ollama, claude, openai, bedrock)."""
     model_config = SettingsConfigDict(env_prefix="GRAPHSAST_LLM__")
 
-    backend:  str = Field("ollama", description="LLM backend: 'ollama' or 'claude'")
+    backend:  str = Field("ollama", description="LLM backend: 'ollama', 'claude', 'openai', or 'bedrock'")
     base_url: str = Field("http://localhost:11434", description="Ollama server base URL (ollama backend only)")
-    model:    str = Field("llama3.1",              description="Model name (ollama: e.g. llama3.1; claude: e.g. claude-opus-4-6)")
+    model:    str = Field("llama3.1",              description="Model name (ollama: e.g. llama3.1; claude: e.g. claude-opus-4-6; openai: e.g. gpt-4o; bedrock: e.g. anthropic.claude-3-5-sonnet-20241022-v2:0)")
+    # Anthropic / Claude
     claude_api_key: Optional[str] = Field(None,    description="Anthropic API key (claude backend; falls back to ANTHROPIC_API_KEY env var)")
+    # OpenAI
+    openai_api_key: Optional[str] = Field(None,    description="OpenAI API key (openai backend; falls back to OPENAI_API_KEY env var)")
+    # AWS Bedrock
+    bedrock_region: str          = Field("us-east-1", description="AWS region for Bedrock (bedrock backend)")
+    bedrock_access_key: Optional[str] = Field(None, description="AWS access key ID (bedrock backend; falls back to AWS_ACCESS_KEY_ID env var)")
+    bedrock_secret_key: Optional[str] = Field(None, description="AWS secret access key (bedrock backend; falls back to AWS_SECRET_ACCESS_KEY env var)")
+    bedrock_session_token: Optional[str] = Field(None, description="AWS session token for temporary credentials (bedrock backend)")
+    # Shared
     timeout:  float = Field(300.0,                 description="Per-request timeout in seconds")
     temperature: float = Field(0.1,                description="Sampling temperature (0.0–1.0)")
-    num_ctx:  int = Field(8192,                    description="Context window size (tokens)")
+    num_ctx:  int = Field(32768,                   description="Context window size (tokens, ollama only). 32768 recommended for deep analysis with 8B+ models.")
     health_check_timeout: float = Field(5.0,       description="Timeout for Ollama availability probe")
+    analyst_max_turns: int = Field(15,             description="Max LLM tool-use turns per finding (more turns = deeper investigation)")
     max_entry_points: int = Field(0,               description="Max entry points for Phase 1A (0 = all)")
     phase1a_max_turns: int = Field(8,              description="Max LLM turns in Phase 1A per entry point")
     phase1b_max_turns_l2: int = Field(5,           description="Max turns for Phase 1B layer-2 validation")

@@ -166,11 +166,12 @@ class OllamaClient(LLMClient):
                 except json.JSONDecodeError:
                     args = {}
 
-                logger.debug("LLM tool call: %s(%s)", name, args)
+                logger.info("  → tool call: %s(%s)", name, args)
                 try:
                     result = tool_executor(name, args)
                 except Exception as exc:
                     result = f"Error executing {name}: {exc}"
+                logger.info("  ← result: %s", (result[:120] + "…") if len(result) > 120 else result)
 
                 messages.append({
                     "role": "tool",

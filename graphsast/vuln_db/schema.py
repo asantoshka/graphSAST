@@ -32,6 +32,29 @@ CREATE TABLE IF NOT EXISTS entry_point_patterns (
 );
 CREATE INDEX IF NOT EXISTS idx_ep_lang ON entry_point_patterns(language);
 
+-- AST walking strategy for entry point detection (drives TaintMarker)
+-- Each row tells the engine HOW to find entry-point functions for a language.
+-- Adding a new language with any AST structure = insert rows here, no code changes.
+--
+-- strategy values:
+--   'wrapped_decorator'  — function wrapped inside a container node alongside
+--                          decorator children (Python decorated_definition)
+--   'annotated_function' — function node has annotation/attribute container child
+--                          (Java modifiers>annotation, C# attribute_list, TS decorator)
+--   'call_registration'  — a call expression registers a handler as a route
+--                          (Go http.HandleFunc, Express app.get, C# app.MapGet)
+--
+-- config is a JSON object whose keys depend on the strategy type.
+-- See docs/adding-language-support.md for the full key reference.
+CREATE TABLE IF NOT EXISTS entry_point_strategies (
+    id          TEXT PRIMARY KEY,
+    language    TEXT NOT NULL,
+    strategy    TEXT NOT NULL,               -- 'wrapped_decorator'|'annotated_function'|'call_registration'
+    config      TEXT NOT NULL DEFAULT '{}',  -- JSON: strategy-specific parameters
+    notes       TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_ep_strategy_lang ON entry_point_strategies(language);
+
 -- Human-readable capability checklist per language
 CREATE TABLE IF NOT EXISTS language_capabilities (
     id          TEXT PRIMARY KEY,

@@ -40,9 +40,9 @@ def load_all(
         counts = load_builtin_lang_rules(vuln_db)
         results["builtin_lang_rules"] = sum(counts.values())
         logger.info(
-            "Built-in lang rules: %d arg_node_types, %d ep_patterns, %d capabilities",
+            "Built-in lang rules: %d arg_node_types, %d ep_patterns, %d ep_strategies, %d capabilities",
             counts["arg_node_types"], counts["entry_point_patterns"],
-            counts["language_capabilities"],
+            counts["entry_point_strategies"], counts["language_capabilities"],
         )
 
     if "custom" in sources:

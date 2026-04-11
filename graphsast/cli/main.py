@@ -1,9 +1,8 @@
-"""GraphSAST CLI entry point."""
+"""GraphSAST CLI."""
 
 from __future__ import annotations
 
 import logging
-import sys
 from pathlib import Path
 from typing import Optional
 
@@ -13,13 +12,13 @@ from graphsast.config import get_settings
 
 app = typer.Typer(
     name="graphsast",
-    help="Security analysis tool combining a code graph, vulnerability pattern DB, and LLM layer.",
+    help=(
+        "Security analysis: code-review-graph builds the graph, "
+        "Semgrep finds issues, LLM reasons about them."
+    ),
     no_args_is_help=True,
 )
 
-# ──────────────────────────────────────────────────────────────────────────────
-# Helpers
-# ──────────────────────────────────────────────────────────────────────────────
 
 def _setup_logging(verbose: bool) -> None:
     level = logging.DEBUG if verbose else logging.INFO
@@ -30,235 +29,36 @@ def _setup_logging(verbose: bool) -> None:
     )
 
 
-def _default_db_dir(target: Path) -> Path:
+def _db_dir(target: Path) -> Path:
     cfg = get_settings(project_root=target)
     return target / cfg.paths.db_subdir
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# build-graph
-# ──────────────────────────────────────────────────────────────────────────────
+def _ensure_vuln_db(vuln_db_path: Path) -> None:
+    """Seed vulns.db with offline built-in data if it doesn't exist or is empty.
 
-@app.command("build-graph")
-def build_graph(
-    target: Path = typer.Argument(..., help="Source directory to analyse"),
-    db_dir: Optional[Path] = typer.Option(None, "--db-dir", help="Where to store graph.db and vulns.db"),
-    incremental: bool = typer.Option(True, "--incremental/--full", help="Skip unchanged files"),
-    verbose: bool = typer.Option(False, "--verbose", "-v"),
-) -> None:
-    """Parse a codebase and build the security-annotated code graph."""
-    _setup_logging(verbose)
-    log = logging.getLogger("graphsast.cli")
-
-    target = target.resolve()
-    if not target.exists():
-        typer.echo(f"Error: target path does not exist: {target}", err=True)
-        raise typer.Exit(1)
-
-    db_dir = (db_dir or _default_db_dir(target)).resolve()
-    db_dir.mkdir(parents=True, exist_ok=True)
-
-    graph_db_path = db_dir / "graph.db"
-    vuln_db_path = db_dir / "vulns.db"
-
-    log.info("Graph DB : %s", graph_db_path)
-    log.info("Vuln DB  : %s", vuln_db_path)
-
-    from graphsast.graph_db.store import SecurityGraphStore
-    from graphsast.vuln_db.store import VulnStore
-    from graphsast.ingestion.pipeline import IngestionPipeline
-
-    vuln_db = None
-    if vuln_db_path.exists():
-        vuln_db = VulnStore(vuln_db_path)
-        stats = vuln_db.stats()
-        log.info(
-            "Vuln DB loaded: %d classes, %d signatures",
-            stats["vuln_classes"], stats["taint_signatures"],
-        )
-    else:
-        typer.echo(
-            "Warning: vulns.db not found. Run `graphsast update-vuln-db` first for taint annotation.",
-            err=True,
-        )
-
-    with SecurityGraphStore(graph_db_path) as graph:
-        pipeline = IngestionPipeline(graph, vuln_db=vuln_db, incremental=incremental)
-        summary = pipeline.run(target)
-
-    if vuln_db:
-        vuln_db.close()
-
-    typer.echo("\n── Build Graph Summary ──────────────────────")
-    typer.echo(f"  Files parsed       : {summary['files_processed']}")
-    typer.echo(f"  Files skipped      : {summary['files_skipped']} (unchanged)")
-    typer.echo(f"  Call arg records   : {summary['call_arg_records']}")
-    typer.echo(f"  Taint annotations  : {summary['taint_annotations']}")
-    typer.echo(f"  Entry points       : {summary['entry_points']}")
-    typer.echo(f"  Missing checks     : {summary['missing_checks']}")
-    typer.echo(f"  Elapsed            : {summary['elapsed_seconds']}s")
-    typer.echo(f"\n  Graph DB: {graph_db_path}")
-
-
-# ──────────────────────────────────────────────────────────────────────────────
-# update-vuln-db
-# ──────────────────────────────────────────────────────────────────────────────
-
-@app.command("update-vuln-db")
-def update_vuln_db(
-    target: Path = typer.Argument(Path("."), help="Project root (looks for .graphsast/custom/ here)"),
-    db_dir: Optional[Path] = typer.Option(None, "--db-dir"),
-    source: Optional[str] = typer.Option(None, "--source", help="Loader to run: builtin, custom, semgrep, wstg (comma-separated or single)"),
-    semgrep_rules_path: Optional[Path] = typer.Option(None, "--semgrep-rules-path", help="Path to local semgrep-rules clone (skips git clone/pull)"),
-    no_semgrep_update: bool = typer.Option(False, "--no-semgrep-update", help="Skip git pull on existing semgrep-rules clone"),
-    verbose: bool = typer.Option(False, "--verbose", "-v"),
-) -> None:
-    """Populate / update the vulnerability pattern database."""
-    _setup_logging(verbose)
-    log = logging.getLogger("graphsast.cli")
-
-    target = target.resolve()
-    db_dir = (db_dir or _default_db_dir(target)).resolve()
-    db_dir.mkdir(parents=True, exist_ok=True)
-
-    vuln_db_path = db_dir / "vulns.db"
-
+    Runs OWASP WSTG + lang_sigs importers (embedded, no network).
+    Safe to call every time — all upserts are idempotent.
+    """
     from graphsast.vuln_db.store import VulnStore
     from graphsast.vuln_db.loader import load_all
 
-    # Parse comma-separated sources
-    sources = None
-    if source:
-        sources = [s.strip() for s in source.split(",")]
-
-    with VulnStore(vuln_db_path) as vuln_db:
-        results = load_all(
-            vuln_db,
-            project_root=target,
-            sources=sources,
-            semgrep_rules_path=semgrep_rules_path,
-            semgrep_update=not no_semgrep_update,
-        )
-
-    typer.echo("\n── Update Vuln DB Summary ───────────────────")
-    for loader, count in results.items():
-        typer.echo(f"  {loader:<20}: {count} records")
-    typer.echo(f"\n  Vuln DB: {vuln_db_path}")
-
-
-# ──────────────────────────────────────────────────────────────────────────────
-# query
-# ──────────────────────────────────────────────────────────────────────────────
-
-@app.command("query")
-def query(
-    target: Path = typer.Argument(Path("."), help="Project root"),
-    db_dir: Optional[Path] = typer.Option(None, "--db-dir"),
-    taint_paths: bool = typer.Option(False, "--taint-paths", help="Show source→sink taint paths"),
-    missing_checks: bool = typer.Option(False, "--missing-checks", help="Show missing security checks"),
-    entry_points: bool = typer.Option(False, "--entry-points", help="List all entry points"),
-    sinks: bool = typer.Option(False, "--sinks", help="List all sink-annotated nodes"),
-    verbose: bool = typer.Option(False, "--verbose", "-v"),
-) -> None:
-    """Query the code graph for security information."""
-    _setup_logging(verbose)
-
-    target = target.resolve()
-    db_dir = (db_dir or _default_db_dir(target)).resolve()
-    graph_db_path = db_dir / "graph.db"
-
-    if not graph_db_path.exists():
-        typer.echo(f"Error: graph.db not found at {graph_db_path}. Run build-graph first.", err=True)
-        raise typer.Exit(1)
-
-    from graphsast.graph_db.store import SecurityGraphStore
-
-    with SecurityGraphStore(graph_db_path) as graph:
-        if entry_points:
-            eps = graph.get_entry_points()
-            typer.echo(f"\nEntry points ({len(eps)}):")
-            for ep in eps:
-                typer.echo(f"  {ep}")
-
-        if sinks:
-            s = graph.get_all_sinks()
-            typer.echo(f"\nSink nodes ({len(s)}):")
-            for node in s:
-                typer.echo(f"  {node}")
-
-        if missing_checks:
-            mcs = graph.get_all_missing_checks()
-            typer.echo(f"\nMissing security checks ({len(mcs)}):")
-            for mc in mcs:
-                typer.echo(f"  [{mc.missing_type:12}] {mc.entry_point_qn}")
-
-        if taint_paths:
-            typer.echo("\nFinding taint paths (source → sink, no sanitizer)...")
-            paths = graph.find_taint_paths()
-            typer.echo(f"Found {len(paths)} taint paths:")
-            for p in paths:
-                path_str = " → ".join(p["path"])
-                typer.echo(f"  [{p['depth']} hops] {path_str}")
-
-        if not any([entry_points, sinks, missing_checks, taint_paths]):
-            # Default: print stats
-            conn = graph._conn
-            nodes = conn.execute("SELECT count(*) FROM nodes").fetchone()[0]
-            edges = conn.execute("SELECT count(*) FROM edges").fetchone()[0]
-            call_args = conn.execute("SELECT count(*) FROM call_arguments").fetchone()[0]
-            taints = conn.execute("SELECT count(*) FROM taint_annotations").fetchone()[0]
-            missing = conn.execute("SELECT count(*) FROM missing_checks").fetchone()[0]
-            eps = conn.execute(
-                "SELECT count(*) FROM nodes WHERE is_entry_point = 1"
-            ).fetchone()[0]
-
-            typer.echo(f"\n── Graph Stats ──────────────────────────────")
-            typer.echo(f"  Nodes              : {nodes}")
-            typer.echo(f"  Edges              : {edges}")
-            typer.echo(f"  Call arg records   : {call_args}")
-            typer.echo(f"  Taint annotations  : {taints}")
-            typer.echo(f"  Entry points       : {eps}")
-            typer.echo(f"  Missing checks     : {missing}")
-
-
-@app.command("capabilities")
-def capabilities(
-    target: Path = typer.Argument(Path("."), help="Project root"),
-    db_dir: Optional[Path] = typer.Option(None, "--db-dir"),
-    language: Optional[str] = typer.Option(None, "--language", "-l", help="Filter by language"),
-) -> None:
-    """Show what GraphSAST can detect per language."""
-    target = target.resolve()
-    db_dir = (db_dir or _default_db_dir(target)).resolve()
-    vuln_db_path = db_dir / "vulns.db"
-
-    if not vuln_db_path.exists():
-        typer.echo("Error: vulns.db not found. Run `graphsast update-vuln-db` first.", err=True)
-        raise typer.Exit(1)
-
-    from graphsast.vuln_db.store import VulnStore
-
-    STATUS_ICON = {"supported": "✓", "partial": "~", "planned": "○"}
-
-    with VulnStore(vuln_db_path) as vuln_db:
-        rows = vuln_db.get_capabilities(language)
-
-    if not rows:
-        typer.echo("No capability data found. Run `graphsast update-vuln-db` first.")
-        raise typer.Exit(0)
-
-    # Group by language
-    by_lang: dict[str, list[dict]] = {}
-    for r in rows:
-        by_lang.setdefault(r["language"], []).append(r)
-
-    for lang, caps in by_lang.items():
-        typer.echo(f"\n── {lang} {'─' * (40 - len(lang))}")
-        for cap in caps:
-            icon = STATUS_ICON.get(cap["status"], "?")
-            typer.echo(f"  [{icon}] {cap['capability']:<25} {cap['description']}")
-
-    typer.echo(f"\n  ✓ = supported   ~ = partial   ○ = planned")
+    log = logging.getLogger("graphsast.cli")
+    with VulnStore(vuln_db_path) as vdb:
+        stats = vdb.stats()
+        if stats["vuln_classes"] == 0 and stats["taint_signatures"] == 0:
+            log.info("VulnDB: seeding built-in data (WSTG + lang_sigs) ...")
+            load_all(vdb, vuln_db_path.parent.parent, sources=["wstg", "lang_sigs"])
+            after = vdb.stats()
+            log.info(
+                "VulnDB: seeded %d vuln classes, %d taint signatures",
+                after["vuln_classes"], after["taint_signatures"],
+            )
+        else:
+            log.debug(
+                "VulnDB: %d vuln classes, %d taint signatures (already seeded)",
+                stats["vuln_classes"], stats["taint_signatures"],
+            )
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -267,268 +67,826 @@ def capabilities(
 
 @app.command("scan")
 def scan(
-    target: Path = typer.Argument(..., help="Source directory to scan"),
-    db_dir: Optional[Path] = typer.Option(None, "--db-dir", help="Where graph.db and vulns.db live"),
+    target: Path = typer.Argument(..., help="Repository to scan"),
+    db_dir: Optional[Path] = typer.Option(
+        None, "--db-dir", help="Where to store graph.db (default: <target>/.graphsast/)"
+    ),
+    semgrep_config: str = typer.Option(
+        "auto", "--semgrep-config",
+        help="Semgrep --config value: 'auto', 'p/default', or path to rules file",
+    ),
+    semgrep_timeout: int = typer.Option(300, "--semgrep-timeout", help="Semgrep timeout in seconds"),
     output: Optional[Path] = typer.Option(None, "--output", "-o", help="Write report to file"),
-    fmt: Optional[str] = typer.Option(None, "--format", "-f", help="Output format: markdown|json|sarif (default from config)"),
-    no_semgrep: bool = typer.Option(False, "--no-semgrep", help="Skip Semgrep pass (faster)"),
-    max_semgrep_rules: int = typer.Option(0, "--max-semgrep-rules", help="Limit semgrep rules (0 = all)"),
-    language: Optional[str] = typer.Option(None, "--language", "-l", help="Filter semgrep rules to this language"),
-    build_first: bool = typer.Option(False, "--build-first", help="Run build-graph before scanning"),
-    incremental: bool = typer.Option(True, "--incremental/--full"),
-    # LLM options
-    llm: bool = typer.Option(False, "--llm", help="Enable Ollama LLM analysis (Phase 1A + 1B)"),
-    llm_model: Optional[str] = typer.Option(None, "--llm-model", help="Ollama model name (default from config)"),
-    llm_url: Optional[str] = typer.Option(None, "--llm-url", help="Ollama base URL (default from config)"),
-    llm_max_ep: Optional[int] = typer.Option(None, "--llm-max-ep", help="Max entry points for Phase 1A (0 = all, default from config)"),
-    llm_timeout: Optional[float] = typer.Option(None, "--llm-timeout", help="Per-request LLM timeout in seconds (default from config)"),
+    fmt: str = typer.Option("markdown", "--format", "-f", help="Output format: markdown|json|sarif"),
+    llm: bool = typer.Option(False, "--llm", help="Enable LLM analysis of each finding"),
+    llm_backend: Optional[str] = typer.Option(None, "--llm-backend", help="ollama|claude|openai|bedrock"),
+    llm_model: Optional[str] = typer.Option(None, "--llm-model", help="Model name"),
+    llm_max_turns: int = typer.Option(
+        0, "--llm-max-turns",
+        help="Max tool-use turns per finding (0 = use config default)",
+    ),
+    hunt: bool = typer.Option(False, "--hunt", help="Also run autonomous LLM hunt after Semgrep scan (requires --llm)"),
+    hunt_max_entries: int = typer.Option(10, "--hunt-max-entries", help="Max entry points for hunt (used with --hunt)"),
+    full_hunt: bool = typer.Option(False, "--full-hunt", help="Hunt all entry points and flows — no cap (implies --hunt)"),
     verbose: bool = typer.Option(False, "--verbose", "-v"),
 ) -> None:
-    """Run a full security scan and produce a report."""
+    """Scan a repository: build graph → run Semgrep → (optionally) analyse with LLM → (optionally) hunt."""
     _setup_logging(verbose)
     log = logging.getLogger("graphsast.cli")
 
     target = target.resolve()
     if not target.exists():
-        typer.echo(f"Error: target path does not exist: {target}", err=True)
+        typer.echo(f"Error: {target} does not exist", err=True)
         raise typer.Exit(1)
 
-    # Resolve configuration: config file < env vars < CLI flags
     cfg = get_settings(project_root=target)
-    effective_fmt       = fmt       or cfg.output.format
-    effective_llm_model = llm_model or cfg.llm.model
-    effective_llm_url   = llm_url   or cfg.llm.base_url
-    effective_llm_timeout = llm_timeout if llm_timeout is not None else cfg.llm.timeout
-    effective_llm_max_ep  = llm_max_ep  if llm_max_ep  is not None else cfg.llm.max_entry_points
+    effective_db_dir = (db_dir or _db_dir(target)).resolve()
+    effective_db_dir.mkdir(parents=True, exist_ok=True)
+    graph_db = effective_db_dir / "graph.db"
 
-    db_dir = (db_dir or _default_db_dir(target)).resolve()
-    graph_db_path = db_dir / "graph.db"
-    vuln_db_path  = db_dir / "vulns.db"
+    _ensure_vuln_db(effective_db_dir / "vulns.db")
 
-    # Optionally build the graph first
-    if build_first or not graph_db_path.exists():
-        typer.echo("Building code graph...")
-        db_dir.mkdir(parents=True, exist_ok=True)
-        from graphsast.graph_db.store import SecurityGraphStore
-        from graphsast.vuln_db.store import VulnStore as VS
-        from graphsast.vuln_db.loader import load_all as _load_all
-        from graphsast.ingestion.pipeline import IngestionPipeline
+    # --full-hunt implies --hunt
+    if full_hunt:
+        hunt = True
+        log.debug("--full-hunt implies --hunt")
 
-        vuln_db_build = VS(vuln_db_path) if vuln_db_path.exists() else None
-        if not vuln_db_path.exists():
+    # --hunt implies --llm
+    if hunt and not llm:
+        llm = True
+        log.debug("--hunt implies --llm; enabling LLM analysis")
+
+    log.info("Target   : %s", target)
+    log.info("Graph DB : %s", graph_db)
+
+    # ── LLM client (optional) ──────────────────────────────────────────────────
+    llm_client = None
+    if llm:
+        from graphsast.config import LLMSettings
+        from graphsast.llm.factory import get_llm_client
+
+        llm_cfg = LLMSettings(
+            backend=llm_backend or cfg.llm.backend,
+            model=llm_model or cfg.llm.model,
+            base_url=cfg.llm.base_url,
+            claude_api_key=cfg.llm.claude_api_key,
+            openai_api_key=cfg.llm.openai_api_key,
+            bedrock_region=cfg.llm.bedrock_region,
+            timeout=cfg.llm.timeout,
+            temperature=cfg.llm.temperature,
+            num_ctx=cfg.llm.num_ctx,
+            analyst_max_turns=llm_max_turns if llm_max_turns > 0 else cfg.llm.analyst_max_turns,
+        )
+        llm_client_obj = get_llm_client(cfg.model_copy(update={"llm": llm_cfg}))
+        if not llm_client_obj.is_available():
             typer.echo(
-                "Warning: vulns.db not found — run `graphsast update-vuln-db` for better results.",
+                f"Warning: LLM backend '{llm_cfg.backend}' not available. "
+                "Running without LLM analysis.",
                 err=True,
             )
+            llm_client_obj.close()
+        else:
+            llm_client = llm_client_obj
+            log.info("LLM      : %s / %s", llm_cfg.backend, llm_cfg.model)
 
-        with SecurityGraphStore(graph_db_path) as g:
-            pipeline = IngestionPipeline(g, vuln_db=vuln_db_build, incremental=incremental)
-            summary = pipeline.run(target)
+    # ── Run scan ───────────────────────────────────────────────────────────────
+    from graphsast.analysis.scanner import scan as _scan
 
-        if vuln_db_build:
-            vuln_db_build.close()
+    effective_turns = llm_max_turns if llm_max_turns > 0 else cfg.llm.analyst_max_turns
 
-        typer.echo(
-            f"  Graph built: {summary['files_processed']} files, "
-            f"{summary['taint_annotations']} taint annotations, "
-            f"{summary['entry_points']} entry points"
+    try:
+        findings, summary = _scan(
+            target=target,
+            graph_db=graph_db,
+            llm_client=llm_client,
+            semgrep_config=semgrep_config,
+            semgrep_timeout=semgrep_timeout,
+            llm_max_turns=effective_turns,
         )
+    finally:
+        if llm_client:
+            llm_client.close()
 
-    if not graph_db_path.exists():
-        typer.echo(
-            f"Error: graph.db not found at {graph_db_path}. "
-            "Run `graphsast build-graph` first, or use --build-first.",
-            err=True,
+    # ── Render report ──────────────────────────────────────────────────────────
+    import json as _json
+
+    fmt = fmt.lower()
+    if fmt == "sarif":
+        from graphsast.output.sarif import to_sarif
+        rendered = _json.dumps(to_sarif(findings, target), indent=2)
+    elif fmt == "json":
+        from graphsast.output.json_report import to_json
+        rendered = _json.dumps(
+            to_json(findings, target, elapsed=summary["elapsed_seconds"]), indent=2
         )
-        raise typer.Exit(1)
-
-    from graphsast.graph_db.store import SecurityGraphStore
-    from graphsast.vuln_db.store import VulnStore
-    from graphsast.analysis.scanner import Scanner
-    from graphsast.output.sarif import to_sarif
-    from graphsast.output.json_report import to_json
-    from graphsast.output.markdown import to_markdown
-
-    vuln_db = VulnStore(vuln_db_path) if vuln_db_path.exists() else None
-
-    typer.echo(f"\nScanning {target} ...")
-
-    with SecurityGraphStore(graph_db_path) as graph:
-        scanner = Scanner(
-            graph,
-            vuln_db=vuln_db,
-            run_semgrep=not no_semgrep,
-            language=language,
-            max_semgrep_rules=max_semgrep_rules,
-        )
-        findings, summary = scanner.scan(target)
-
-        # ── LLM Phase 1A + 1B (optional) ──
-        p1a_count = 0
-        p1b_confirmed = 0
-        p1b_fp = 0
-        p1a_results: list[dict] = []
-        p1b_results: list[dict] = []
-        if llm:
-            from graphsast.llm.factory import get_llm_client
-            from graphsast.llm.phase1a import run_phase1a
-            from graphsast.llm.phase1b import run_phase1b
-
-            # Build an effective config with CLI overrides applied
-            from graphsast.config import LLMSettings
-            effective_llm_cfg = LLMSettings(
-                backend=cfg.llm.backend,
-                base_url=effective_llm_url,
-                model=effective_llm_model,
-                timeout=effective_llm_timeout,
-                temperature=cfg.llm.temperature,
-                num_ctx=cfg.llm.num_ctx,
-                health_check_timeout=cfg.llm.health_check_timeout,
-                claude_api_key=cfg.llm.claude_api_key,
-                max_entry_points=effective_llm_max_ep,
-                phase1a_max_turns=cfg.llm.phase1a_max_turns,
-                phase1b_max_turns_l2=cfg.llm.phase1b_max_turns_l2,
-                phase1b_max_turns_l3=cfg.llm.phase1b_max_turns_l3,
-            )
-            cfg_with_overrides = cfg.model_copy(update={"llm": effective_llm_cfg})
-
-            with get_llm_client(cfg_with_overrides) as llm_client:
-                if not llm_client.is_available():
-                    typer.echo(
-                        f"Warning: LLM backend '{cfg.llm.backend}' not reachable "
-                        f"(model: '{effective_llm_model}'). Skipping LLM analysis.",
-                        err=True,
-                    )
-                    available = llm_client.list_models()
-                    if available:
-                        typer.echo(f"  Available models: {', '.join(available)}", err=True)
-                else:
-                    typer.echo(f"\n  LLM Phase 1A: autonomous analysis ({effective_llm_model}) ...")
-                    p1a_results = run_phase1a(
-                        graph, llm_client,
-                        scan_run_id=summary["scan_run_id"],
-                        max_entry_points=effective_llm_max_ep,
-                    )
-                    p1a_count = len(p1a_results)
-                    typer.echo(f"  Phase 1A: {p1a_count} LLM findings")
-
-                    typer.echo(f"  LLM Phase 1B: validating Phase 2 findings ...")
-                    p1b_results = run_phase1b(
-                        graph, findings, llm_client,
-                        scan_run_id=summary["scan_run_id"],
-                    )
-                    p1b_confirmed = sum(1 for r in p1b_results if r["verdict"] == "CONFIRMED")
-                    p1b_fp        = sum(1 for r in p1b_results if r["verdict"] == "FALSE_POSITIVE")
-                    typer.echo(f"  Phase 1B: {p1b_confirmed} confirmed, {p1b_fp} false positives")
-
-        # ── Merge LLM results into findings ──────────────────────────────────
-        if p1a_results or p1b_results:
-            from graphsast.analysis.phase3.llm_merge import merge_llm_results
-            findings = merge_llm_results(findings, p1a_results, p1b_results)
-
-        # ── Reachability severity adjustment (always) ─────────────────────────
-        from graphsast.analysis.phase3.reachability import apply_reachability
-        findings = apply_reachability(findings, graph, target=target)
-
-    if vuln_db:
-        vuln_db.close()
-
-    scan_run_id = summary["scan_run_id"]
-
-    # Active findings only (suppress FPs from severity counts)
-    active_findings = [f for f in findings if not f.is_suppressed]
-
-    # ── Render output ──
-    effective_fmt = effective_fmt.lower()
-    if effective_fmt == "sarif":
-        doc = to_sarif(active_findings, target, scan_run_id=scan_run_id)
-        import json as _json
-        rendered = _json.dumps(doc, indent=2)
-    elif effective_fmt == "json":
-        doc = to_json(findings, target, scan_run_id=scan_run_id, elapsed=summary["elapsed_seconds"])
-        import json as _json
-        rendered = _json.dumps(doc, indent=2)
     else:
-        rendered = to_markdown(findings, target, scan_run_id=scan_run_id, elapsed=summary["elapsed_seconds"])
+        from graphsast.output.markdown import to_markdown
+        rendered = to_markdown(findings, target, elapsed=summary["elapsed_seconds"])
 
     if output:
         output.parent.mkdir(parents=True, exist_ok=True)
         output.write_text(rendered, encoding="utf-8")
-        typer.echo(f"  Report written to: {output}")
+        typer.echo(f"Report written to: {output}")
     else:
         typer.echo(rendered)
 
-    # ── Console summary ──
-    from graphsast.analysis.scanner import _count_by_severity
-    active_sev  = _count_by_severity(active_findings)
-    suppressed  = [f for f in findings if f.is_suppressed]
+    # ── Console summary ────────────────────────────────────────────────────────
+    from graphsast.cli._render import print_scan_summary, print_findings_table
 
-    typer.echo("\n── Scan Summary ─────────────────────────────")
-    typer.echo(f"  Pass A (semgrep)     : {summary['pass_a_semgrep']} findings")
-    typer.echo(f"  Pass B (taint BFS)   : {summary['pass_b_taint']} findings")
-    typer.echo(f"  Pass C (structure)   : {summary['pass_c_structure']} findings")
-    typer.echo(f"  After correlation    : {summary['findings_after_correlation']} unique findings")
-    if llm:
-        typer.echo(f"  Phase 1A (LLM)       : {p1a_count} autonomous findings")
-        typer.echo(f"  Phase 1B confirmed   : {p1b_confirmed}")
-        typer.echo(f"  Phase 1B suppressed  : {len(suppressed)} (false positives)")
-    typer.echo(f"  Active findings      : {len(active_findings)}")
-    typer.echo(f"  CRITICAL             : {active_sev.get('CRITICAL', 0)}")
-    typer.echo(f"  HIGH                 : {active_sev.get('HIGH', 0)}")
-    typer.echo(f"  MEDIUM               : {active_sev.get('MEDIUM', 0)}")
-    typer.echo(f"  LOW                  : {active_sev.get('LOW', 0)}")
-    typer.echo(f"  Elapsed              : {summary['elapsed_seconds']}s")
+    active = [f for f in findings if not f.is_false_positive]
+    by_sev: dict[str, int] = {}
+    for f in active:
+        s = f.effective_severity
+        by_sev[s] = by_sev.get(s, 0) + 1
 
-    # Exit 1 if any HIGH or CRITICAL active findings (useful for CI)
-    if active_sev.get("CRITICAL", 0) + active_sev.get("HIGH", 0) > 0:
+    # Print active findings table before the summary panel
+    if active:
+        active_rows = [
+            {
+                "rule_id":      f.rule_id,
+                "severity":     f.severity,
+                "llm_severity": f.llm_severity,
+                "llm_verdict":  f.llm_verdict,
+                "file_path":    f.file_path,
+                "line_start":   f.line_start,
+                "llm_reasoning": f.llm_reasoning,
+            }
+            for f in active
+        ]
+        print_findings_table(active_rows, title="Active Findings", verbose=verbose)
+
+    print_scan_summary(summary, by_sev, graph_db, target, has_llm=llm_client is not None)
+
+    # ── Optional hunt phase ────────────────────────────────────────────────────
+    if hunt:
+        if not llm_client:
+            # shouldn't reach here since --hunt implies --llm above, but guard anyway
+            typer.echo("Warning: hunt skipped — no LLM client available.", err=True)
+        else:
+            from graphsast.analysis.hunter import hunt as _hunt
+            from graphsast.analysis.models import Finding as _Finding
+            from graphsast.analysis.store import FindingStore as _FindingStore
+            from graphsast.graph.client import GraphClient as _GraphClient
+            from graphsast.cli._render import print_findings_table as _print_findings_table
+
+            # Re-open a fresh LLM client (previous one was closed in finally above)
+            from graphsast.llm.factory import get_llm_client as _get_llm_client
+            from graphsast.config import LLMSettings as _LLMSettings
+            hunt_llm_cfg = _LLMSettings(
+                backend=llm_backend or cfg.llm.backend,
+                model=llm_model or cfg.llm.model,
+                base_url=cfg.llm.base_url,
+                claude_api_key=cfg.llm.claude_api_key,
+                openai_api_key=cfg.llm.openai_api_key,
+                bedrock_region=cfg.llm.bedrock_region,
+                timeout=cfg.llm.timeout,
+                temperature=cfg.llm.temperature,
+                num_ctx=cfg.llm.num_ctx,
+                analyst_max_turns=effective_turns,
+            )
+            hunt_client = _get_llm_client(cfg.model_copy(update={"llm": hunt_llm_cfg}))
+            _vuln_db_path = effective_db_dir / "vulns.db"
+            try:
+                with _GraphClient(graph_db, target) as graph:
+                    effective_max = (
+                        len(graph.list_entry_points()) + 200  # covers all entries + flows
+                        if full_hunt else hunt_max_entries
+                    )
+                    if full_hunt:
+                        log.info("Full hunt: scanning all entry points and flows")
+                    raw_hunt = _hunt(
+                        graph=graph,
+                        llm_client=hunt_client,
+                        max_entry_points=effective_max,
+                        max_turns=effective_turns,
+                        vuln_db_path=_vuln_db_path if _vuln_db_path.exists() else None,
+                    )
+            finally:
+                hunt_client.close()
+
+            hunt_findings: list[_Finding] = []
+            with _FindingStore(graph_db) as store:
+                hunt_run_id = store.start_run(str(target), "hunter", hunt_llm_cfg.model)
+                for raw in raw_hunt:
+                    hf = _Finding(
+                        rule_id=raw["rule_id"],
+                        title=raw["title"],
+                        message=raw["message"],
+                        severity=raw["severity"],
+                        file_path=raw["file_path"],
+                        line_start=raw["line_start"],
+                        line_end=raw["line_end"],
+                    )
+                    hf.llm_verdict      = "CONFIRMED"
+                    hf.llm_severity     = raw["severity"]
+                    hf.llm_reasoning    = raw.get("reasoning", "")
+                    hf.llm_description  = raw.get("description")
+                    hf.llm_poc          = raw.get("poc")
+                    hf.llm_cvss_score   = raw.get("cvss_score")
+                    hf.llm_cvss_vector  = raw.get("cvss_vector")
+                    store.upsert_finding(hf, hunt_run_id, source="hunter")
+                    hunt_findings.append(hf)
+                hunt_summary = {
+                    "run_id": hunt_run_id, "semgrep_findings": 0,
+                    "deduplicated": 0, "new_findings": len(raw_hunt),
+                    "recurring": 0, "fixed": 0, "cache_hits": 0,
+                    "llm_analysed": len(raw_hunt), "confirmed": len(raw_hunt),
+                    "false_positives": 0, "needs_review": 0, "elapsed_seconds": 0,
+                }
+                store.finish_run(hunt_run_id, hunt_summary)
+
+            if hunt_findings:
+                hunt_rows = [
+                    {
+                        "rule_id": f.rule_id, "severity": f.severity,
+                        "llm_severity": f.llm_severity, "llm_verdict": f.llm_verdict,
+                        "file_path": f.file_path, "line_start": f.line_start,
+                        "llm_reasoning": f.llm_reasoning,
+                    }
+                    for f in hunt_findings
+                ]
+                _print_findings_table(hunt_rows, title="Hunt Findings", verbose=verbose)
+            else:
+                from graphsast.cli._render import console
+                console.print("[dim]  Hunt: no additional findings.[/dim]")
+
+    has_critical_high = by_sev.get("CRITICAL", 0) + by_sev.get("HIGH", 0) > 0
+    if has_critical_high:
         raise typer.Exit(1)
 
+
+# ──────────────────────────────────────────────────────────────────────────────
+# describe
+# ──────────────────────────────────────────────────────────────────────────────
+
+@app.command("describe")
+def describe_cmd(
+    target: Path = typer.Argument(..., help="Repository to describe"),
+    db_dir: Optional[Path] = typer.Option(
+        None, "--db-dir", help="Graph DB directory (default: <target>/.graphsast/)"
+    ),
+    llm: bool = typer.Option(False, "--llm", help="Generate an LLM narrative description"),
+    llm_backend: Optional[str] = typer.Option(None, "--llm-backend", help="ollama|claude|openai|bedrock"),
+    llm_model: Optional[str] = typer.Option(None, "--llm-model", help="Model name"),
+    output: Optional[Path] = typer.Option(None, "--output", "-o", help="Write report to file"),
+    verbose: bool = typer.Option(False, "--verbose", "-v"),
+) -> None:
+    """Describe and explain the code graph — stats, architecture, attack surface, flows.
+
+    Builds the graph automatically if it doesn't exist yet (no Semgrep or LLM scan).
+    Add --llm for an AI-generated narrative (architecture, data flows, security observations).
+    """
+    _setup_logging(verbose)
+    log = logging.getLogger("graphsast.cli")
+
+    target = target.resolve()
+    if not target.exists():
+        typer.echo(f"Error: {target} does not exist", err=True)
+        raise typer.Exit(1)
+
+    cfg = get_settings(project_root=target)
+    effective_db_dir = (db_dir or _db_dir(target)).resolve()
+    effective_db_dir.mkdir(parents=True, exist_ok=True)
+    graph_db = effective_db_dir / "graph.db"
+
+    if not graph_db.exists():
+        log.info("No graph DB found — building code graph for %s ...", target)
+        from graphsast.analysis.scanner import _build_graph
+        _build_graph(target, graph_db)
+
+    from graphsast.graph.client import GraphClient
+
+    with GraphClient(graph_db, target) as graph:
+        stats       = graph.get_stats()
+        entry_points = graph.list_entry_points()
+        flows        = graph.get_flows(limit=20)
+
+    # ── Structured report ─────────────────────────────────────────────────────
+    import shutil
+    width = min(shutil.get_terminal_size((80, 20)).columns, 100)
+    sep = "─" * width
+
+    lines: list[str] = []
+
+    def _h(title: str) -> None:
+        lines.append(f"\n{sep}")
+        lines.append(f"  {title}")
+        lines.append(sep)
+
+    lines.append(f"\n  GraphSAST · Codebase Description")
+    lines.append(f"  Target : {target}")
+    lines.append(f"  DB     : {graph_db}")
+
+    # ── Stats ─────────────────────────────────────────────────────────────────
+    _h("Graph Statistics")
+    lines.append(f"  Files parsed        {stats['files']}")
+    lines.append(f"  Total nodes         {stats['nodes_total']}")
+    for kind, cnt in stats["nodes_by_kind"].items():
+        lines.append(f"    {kind:<20} {cnt}")
+    lines.append(f"  Total edges         {stats['edges_total']}")
+    for kind, cnt in stats["edges_by_kind"].items():
+        lines.append(f"    {kind:<20} {cnt}")
+    lines.append(f"  Pre-computed flows  {stats['flows']}")
+    lines.append(f"  Entry points        {len(entry_points)}")
+
+    # ── Languages ─────────────────────────────────────────────────────────────
+    if stats["languages"]:
+        _h("Language Breakdown")
+        total_lang = sum(stats["languages"].values()) or 1
+        bar_width = 30
+        for lang, cnt in stats["languages"].items():
+            pct = round(100 * cnt / total_lang)
+            bar = "█" * round(bar_width * cnt / total_lang)
+            lines.append(f"  {lang:<14} {bar:<{bar_width}}  {cnt:>5}  ({pct}%)")
+
+    # ── Top files ─────────────────────────────────────────────────────────────
+    _h("Top Files by Symbol Count")
+    for tf in stats["top_files"]:
+        try:
+            rel = Path(tf["file_path"]).relative_to(target).as_posix()
+        except ValueError:
+            rel = tf["file_path"]
+        lines.append(f"  {tf['symbol_count']:>4}  {rel}")
+
+    # ── Hub functions ─────────────────────────────────────────────────────────
+    if stats["hub_functions"]:
+        _h("Most-Called Functions (Hubs)")
+        for hf in stats["hub_functions"]:
+            qname = hf["qualified_name"]
+            name  = qname.split("::")[-1] if "::" in qname else qname
+            try:
+                rel_q = Path(qname.split("::")[0]).relative_to(target).as_posix() + "::" + name if "::" in qname else qname
+            except ValueError:
+                rel_q = qname
+            lines.append(f"  {hf['caller_count']:>4} caller(s)  {rel_q}")
+
+    # ── Entry points ──────────────────────────────────────────────────────────
+    _h(f"Attack Surface — Entry Points ({len(entry_points)} total)")
+    by_file: dict[str, list] = {}
+    for ep in entry_points:
+        fp = ep.get("file_path") or "unknown"
+        try:
+            fp = Path(fp).relative_to(target).as_posix()
+        except ValueError:
+            pass
+        by_file.setdefault(fp, []).append(ep)
+    for fp, eps in by_file.items():
+        lines.append(f"\n  {fp}")
+        for ep in eps:
+            lines.append(f"    line {ep.get('line_start', '?'):<6} {ep.get('name', '?')}")
+
+    # ── Flows ─────────────────────────────────────────────────────────────────
+    if flows:
+        _h(f"Pre-Computed Execution Flows — top {min(len(flows), 20)} by criticality")
+        for i, flow in enumerate(flows[:20], 1):
+            name       = flow.get("name") or flow.get("entry_point", "?")
+            depth      = flow.get("depth", "?")
+            node_count = flow.get("node_count", "?")
+            file_count = flow.get("file_count", "?")
+            crit       = flow.get("criticality", 0)
+            lines.append(
+                f"  {i:>2}. crit={crit:.2f}  depth={depth}  nodes={node_count}  "
+                f"files={file_count}  {name}"
+            )
+
+    report = "\n".join(lines) + "\n"
+
+    # ── Optional LLM narrative ────────────────────────────────────────────────
+    llm_narrative = ""
+    if llm:
+        from graphsast.config import LLMSettings
+        from graphsast.llm.factory import get_llm_client
+        from graphsast.analysis.describer import describe as _llm_describe
+
+        llm_cfg = LLMSettings(
+            backend=llm_backend or cfg.llm.backend,
+            model=llm_model or cfg.llm.model,
+            base_url=cfg.llm.base_url,
+            claude_api_key=cfg.llm.claude_api_key,
+            openai_api_key=cfg.llm.openai_api_key,
+            bedrock_region=cfg.llm.bedrock_region,
+            timeout=cfg.llm.timeout,
+            temperature=cfg.llm.temperature,
+            num_ctx=cfg.llm.num_ctx,
+        )
+        with get_llm_client(cfg.model_copy(update={"llm": llm_cfg})) as llm_client:
+            if not llm_client.is_available():
+                typer.echo(
+                    f"Warning: LLM backend '{llm_cfg.backend}' not available. Skipping narrative.",
+                    err=True,
+                )
+            else:
+                log.info("Generating LLM narrative (%s / %s) ...", llm_cfg.backend, llm_cfg.model)
+                with GraphClient(graph_db, target) as graph:
+                    llm_narrative = _llm_describe(graph, llm_client, target)
+
+        if llm_narrative:
+            report += f"\n{sep}\n  LLM Narrative\n{sep}\n\n{llm_narrative}\n"
+
+    # ── Output ────────────────────────────────────────────────────────────────
+    if output:
+        output.write_text(report, encoding="utf-8")
+        typer.echo(f"Report written to {output}")
+    else:
+        typer.echo(report)
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# findings
+# ──────────────────────────────────────────────────────────────────────────────
+
+@app.command("findings")
+def findings_cmd(
+    target: Path = typer.Argument(..., help="Repository whose findings to query"),
+    db_dir: Optional[Path] = typer.Option(None, "--db-dir"),
+    run_id: Optional[int] = typer.Option(None, "--run", "-r", help="Show a specific run (default: latest scan run)"),
+    compare: bool = typer.Option(False, "--compare", "-c", help="Diff latest run against previous"),
+    runs: bool = typer.Option(False, "--runs", help="List all scan runs"),
+    all_findings: bool = typer.Option(False, "--all", "-a", help="Show all findings across all runs (combined view)"),
+    source: Optional[str] = typer.Option(None, "--source", "-s", help="Filter by source: semgrep|hunter"),
+    detail: bool = typer.Option(False, "--detail", "-d", help="Full detail view: description, PoC, CVSS, code snippet"),
+    verbose: bool = typer.Option(False, "--verbose", "-v"),
+) -> None:
+    """Query persisted findings and scan history."""
+    _setup_logging(verbose)
+
+    target = target.resolve()
+    effective_db_dir = (db_dir or _db_dir(target)).resolve()
+    graph_db = effective_db_dir / "graph.db"
+
+    if not graph_db.exists():
+        typer.echo(f"No findings DB found at {graph_db}. Run 'graphsast scan' first.", err=True)
+        raise typer.Exit(1)
+
+    from graphsast.analysis.store import FindingStore
+    from graphsast.cli._render import (
+        console, print_comparison, print_finding_detail,
+        print_findings_table, print_runs_table,
+    )
+
+    def _show(rows: list[dict], title: str) -> None:
+        if detail:
+            if not rows:
+                console.print("[dim]  No findings.[/dim]")
+                return
+            console.print(f"\n[bold]{title}[/bold]")
+            active = [r for r in rows if r.get("llm_verdict") != "FALSE_POSITIVE"]
+            fp_rows = [r for r in rows if r.get("llm_verdict") == "FALSE_POSITIVE"]
+            for i, r in enumerate(active, 1):
+                print_finding_detail(r, i, target)
+            if fp_rows:
+                console.print(f"\n[dim]── False positives ({len(fp_rows)}) ──[/dim]")
+                print_findings_table(fp_rows, title="", verbose=False)
+        else:
+            print_findings_table(rows, title=title, verbose=verbose)
+
+    with FindingStore(graph_db) as store:
+        # ── List runs ──────────────────────────────────────────────────────────
+        if runs:
+            all_runs = store.list_runs()
+            if not all_runs:
+                console.print("[dim]No scan runs recorded yet.[/dim]")
+                return
+            print_runs_table(all_runs)
+            return
+
+        # ── Combined all-findings view ─────────────────────────────────────────
+        if all_findings or source:
+            rows = store.get_all_findings(source=source)
+            src_label = f" [{source}]" if source else " [all sources]"
+            _show(rows, f"All Findings{src_label}  ·  {len(rows)} total")
+            return
+
+        # ── Resolve run (skip hunt-only runs for the default view) ─────────────
+        if run_id is None:
+            all_runs = store.list_runs()
+            if not all_runs:
+                console.print("[dim]No scan runs recorded yet.[/dim]")
+                return
+            scan_run = next((r for r in all_runs if r.get("semgrep_config") != "hunter"), None)
+            run_id = (scan_run or all_runs[0])["id"]
+
+        run = store.get_run(run_id)
+        if run is None:
+            typer.echo(f"Run #{run_id} not found.", err=True)
+            raise typer.Exit(1)
+
+        # ── Compare mode ───────────────────────────────────────────────────────
+        if compare:
+            diff = store.compare_with_previous(run_id)
+            print_comparison(diff, run_id)
+            return
+
+        # ── Default: show run findings ─────────────────────────────────────────
+        run_findings = store.get_run_findings(run_id)
+        title = (
+            f"Run #{run_id}  ·  {(run['started_at'] or '')[:16]}"
+            f"  ·  {run['model'] or 'no LLM'}"
+            f"  ·  {len(run_findings)} findings"
+        )
+        _show(run_findings, title)
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# hunt
+# ──────────────────────────────────────────────────────────────────────────────
+
+@app.command("hunt")
+def hunt_cmd(
+    target: Path = typer.Argument(..., help="Repository to hunt"),
+    db_dir: Optional[Path] = typer.Option(
+        None, "--db-dir", help="Graph DB directory (default: <target>/.graphsast/)"
+    ),
+    max_entries: int = typer.Option(
+        10, "--max-entries", "-n",
+        help="Max entry points / flows to audit",
+    ),
+    full_hunt: bool = typer.Option(False, "--full-hunt", help="Audit all entry points and flows — no cap"),
+    llm_backend: Optional[str] = typer.Option(None, "--llm-backend", help="ollama|claude|openai|bedrock"),
+    llm_model: Optional[str] = typer.Option(None, "--llm-model", help="Model name"),
+    llm_max_turns: int = typer.Option(0, "--llm-max-turns", help="Max tool-use turns per entry point (0 = config default)"),
+    output: Optional[Path] = typer.Option(None, "--output", "-o", help="Write report to file"),
+    fmt: str = typer.Option("markdown", "--format", "-f", help="Output format: markdown|json|sarif"),
+    verbose: bool = typer.Option(False, "--verbose", "-v"),
+) -> None:
+    """Autonomous LLM-driven hunt — no Semgrep required.
+
+    Starts from entry points and pre-computed flows, asks the LLM to trace
+    data and find vulnerabilities on its own.
+    """
+    _setup_logging(verbose)
+    log = logging.getLogger("graphsast.cli")
+
+    target = target.resolve()
+    if not target.exists():
+        typer.echo(f"Error: {target} does not exist", err=True)
+        raise typer.Exit(1)
+
+    cfg = get_settings(project_root=target)
+    effective_db_dir = (db_dir or _db_dir(target)).resolve()
+    graph_db = effective_db_dir / "graph.db"
+
+    if not graph_db.exists():
+        typer.echo(
+            f"No graph DB found at {graph_db}. Run 'graphsast scan' first to build the graph.",
+            err=True,
+        )
+        raise typer.Exit(1)
+
+    _ensure_vuln_db(effective_db_dir / "vulns.db")
+
+    # ── LLM client (required for hunt) ────────────────────────────────────────
+    from graphsast.config import LLMSettings
+    from graphsast.llm.factory import get_llm_client
+
+    llm_cfg = LLMSettings(
+        backend=llm_backend or cfg.llm.backend,
+        model=llm_model or cfg.llm.model,
+        base_url=cfg.llm.base_url,
+        claude_api_key=cfg.llm.claude_api_key,
+        openai_api_key=cfg.llm.openai_api_key,
+        bedrock_region=cfg.llm.bedrock_region,
+        timeout=cfg.llm.timeout,
+        temperature=cfg.llm.temperature,
+        num_ctx=cfg.llm.num_ctx,
+        analyst_max_turns=llm_max_turns if llm_max_turns > 0 else cfg.llm.analyst_max_turns,
+    )
+    effective_turns = llm_max_turns if llm_max_turns > 0 else cfg.llm.analyst_max_turns
+
+    llm_client_obj = get_llm_client(cfg.model_copy(update={"llm": llm_cfg}))
+    if not llm_client_obj.is_available():
+        typer.echo(
+            f"Error: LLM backend '{llm_cfg.backend}' not available.",
+            err=True,
+        )
+        llm_client_obj.close()
+        raise typer.Exit(1)
+
+    log.info("LLM      : %s / %s", llm_cfg.backend, llm_cfg.model)
+
+    # ── Run hunt ───────────────────────────────────────────────────────────────
+    from graphsast.analysis.hunter import hunt as _hunt
+    from graphsast.analysis.models import Finding
+    from graphsast.analysis.store import FindingStore
+    from graphsast.graph.client import GraphClient
+
+    vuln_db_path = effective_db_dir / "vulns.db"
+    try:
+        with GraphClient(graph_db, target) as graph:
+            effective_max = (
+                len(graph.list_entry_points()) + 200
+                if full_hunt else max_entries
+            )
+            if full_hunt:
+                log.info("Full hunt: scanning all entry points and flows")
+            raw_findings = _hunt(
+                graph=graph,
+                llm_client=llm_client_obj,
+                max_entry_points=effective_max,
+                max_turns=effective_turns,
+                vuln_db_path=vuln_db_path if vuln_db_path.exists() else None,
+            )
+    finally:
+        llm_client_obj.close()
+
+    # ── Persist findings ───────────────────────────────────────────────────────
+    findings: list[Finding] = []
+    with FindingStore(graph_db) as store:
+        run_id = store.start_run(str(target), "hunter", llm_cfg.model)
+        for raw in raw_findings:
+            f = Finding(
+                rule_id=raw["rule_id"],
+                title=raw["title"],
+                message=raw["message"],
+                severity=raw["severity"],
+                file_path=raw["file_path"],
+                line_start=raw["line_start"],
+                line_end=raw["line_end"],
+            )
+            f.llm_verdict      = "CONFIRMED"
+            f.llm_severity     = raw["severity"]
+            f.llm_reasoning    = raw.get("reasoning", "")
+            f.llm_description  = raw.get("description")
+            f.llm_poc          = raw.get("poc")
+            f.llm_cvss_score   = raw.get("cvss_score")
+            f.llm_cvss_vector  = raw.get("cvss_vector")
+            store.upsert_finding(f, run_id, source="hunter")
+            findings.append(f)
+
+        summary = {
+            "run_id":           run_id,
+            "semgrep_findings": 0,
+            "deduplicated":     0,
+            "new_findings":     len(raw_findings),
+            "recurring":        0,
+            "fixed":            0,
+            "cache_hits":       0,
+            "llm_analysed":     len(raw_findings),
+            "confirmed":        len(raw_findings),
+            "false_positives":  0,
+            "needs_review":     0,
+            "elapsed_seconds":  0,
+        }
+        store.finish_run(run_id, summary)
+
+    # ── Render report ──────────────────────────────────────────────────────────
+    import json as _json
+
+    fmt = fmt.lower()
+    if fmt == "sarif":
+        from graphsast.output.sarif import to_sarif
+        rendered = _json.dumps(to_sarif(findings, target), indent=2)
+    elif fmt == "json":
+        from graphsast.output.json_report import to_json
+        rendered = _json.dumps(to_json(findings, target, elapsed=0), indent=2)
+    else:
+        from graphsast.output.markdown import to_markdown
+        rendered = to_markdown(findings, target, elapsed=0)
+
+    if output:
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_text(rendered, encoding="utf-8")
+        typer.echo(f"Report written to: {output}")
+    else:
+        typer.echo(rendered)
+
+    # ── Console summary ────────────────────────────────────────────────────────
+    from graphsast.cli._render import print_findings_table, print_scan_summary
+
+    by_sev: dict[str, int] = {}
+    for f in findings:
+        s = f.effective_severity
+        by_sev[s] = by_sev.get(s, 0) + 1
+
+    if findings:
+        rows = [
+            {
+                "rule_id":       f.rule_id,
+                "severity":      f.severity,
+                "llm_severity":  f.llm_severity,
+                "llm_verdict":   f.llm_verdict,
+                "file_path":     f.file_path,
+                "line_start":    f.line_start,
+                "llm_reasoning": f.llm_reasoning,
+            }
+            for f in findings
+        ]
+        print_findings_table(rows, title="Hunt Findings", verbose=verbose)
+
+    print_scan_summary(summary, by_sev, graph_db, target, has_llm=True)
+
+    if by_sev.get("CRITICAL", 0) + by_sev.get("HIGH", 0) > 0:
+        raise typer.Exit(1)
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# update-vuln-db
+# ──────────────────────────────────────────────────────────────────────────────
+
+@app.command("update-vuln-db")
+def update_vuln_db(
+    target: Path = typer.Argument(
+        Path("."), help="Repository whose .graphsast/vulns.db to update (default: cwd)"
+    ),
+    db_dir: Optional[Path] = typer.Option(None, "--db-dir"),
+    sources: str = typer.Option(
+        "wstg,lang_sigs",
+        "--sources",
+        help="Comma-separated sources to load: wstg,lang_sigs,semgrep,builtin,custom",
+    ),
+    semgrep_rules_path: Optional[Path] = typer.Option(
+        None, "--semgrep-rules-path",
+        help="Path to local semgrep-rules clone (semgrep source only)",
+    ),
+    no_update: bool = typer.Option(
+        False, "--no-update",
+        help="Skip git pull when refreshing semgrep-rules clone",
+    ),
+) -> None:
+    """Build or refresh the vulnerability database (vulns.db).
+
+    By default loads embedded offline sources (OWASP WSTG + lang_sigs).
+    Add --sources semgrep to also import the full Semgrep rules registry
+    (requires network, clones ~50 MB git repo on first run).
+    """
+    from graphsast.vuln_db.store import VulnStore
+    from graphsast.vuln_db.loader import load_all
+
+    target = target.resolve()
+    effective_db_dir = (db_dir or _db_dir(target)).resolve()
+    effective_db_dir.mkdir(parents=True, exist_ok=True)
+    vuln_db_path = effective_db_dir / "vulns.db"
+
+    source_list = [s.strip() for s in sources.split(",") if s.strip()]
+
+    typer.echo(f"Updating vulns.db at {vuln_db_path}")
+    typer.echo(f"Sources: {', '.join(source_list)}")
+
+    with VulnStore(vuln_db_path) as vdb:
+        results = load_all(
+            vdb,
+            project_root=target,
+            sources=source_list,
+            semgrep_rules_path=semgrep_rules_path,
+            semgrep_update=not no_update,
+        )
+
+    typer.echo("\nDone:")
+    for key, count in results.items():
+        typer.echo(f"  {key}: {count}")
+
+    with VulnStore(vuln_db_path) as vdb:
+        stats = vdb.stats()
+    typer.echo(
+        f"\nDB totals: {stats['vuln_classes']} vuln classes, "
+        f"{stats['taint_signatures']} taint signatures, "
+        f"{stats['detectors']} detectors"
+    )
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# check-llm
+# ──────────────────────────────────────────────────────────────────────────────
 
 @app.command("check-llm")
 def check_llm(
-    url: Optional[str] = typer.Option(None, "--url", help="Ollama base URL (ollama backend only)"),
-    model: Optional[str] = typer.Option(None, "--model", "-m", help="Model to check for (default from config)"),
-    backend: Optional[str] = typer.Option(None, "--backend", help="Backend to check: ollama|claude (default from config)"),
+    backend: Optional[str] = typer.Option(None, "--backend", help="ollama|claude|openai|bedrock"),
+    model: Optional[str] = typer.Option(None, "--model", "-m"),
+    url: Optional[str] = typer.Option(None, "--url", help="Ollama base URL"),
 ) -> None:
-    """Check LLM backend connectivity and list available models."""
-    from graphsast.llm.factory import get_llm_client
+    """Test LLM backend connectivity."""
     from graphsast.config import LLMSettings
+    from graphsast.llm.factory import get_llm_client
 
     cfg = get_settings()
-    effective_backend = backend or cfg.llm.backend
-    effective_model   = model   or cfg.llm.model
-    effective_url     = url     or cfg.llm.base_url
-
-    effective_llm_cfg = LLMSettings(
-        backend=effective_backend,
-        base_url=effective_url,
-        model=effective_model,
+    llm_cfg = LLMSettings(
+        backend=backend or cfg.llm.backend,
+        model=model or cfg.llm.model,
+        base_url=url or cfg.llm.base_url,
         claude_api_key=cfg.llm.claude_api_key,
+        openai_api_key=cfg.llm.openai_api_key,
+        bedrock_region=cfg.llm.bedrock_region,
     )
-    cfg_override = cfg.model_copy(update={"llm": effective_llm_cfg})
 
-    with get_llm_client(cfg_override) as client:
-        available_models = client.list_models()
-        reachable        = client.is_available()
+    with get_llm_client(cfg.model_copy(update={"llm": llm_cfg})) as client:
+        available = client.list_models()
+        reachable = client.is_available()
 
     if not reachable:
         typer.echo(
-            f"Error: backend '{effective_backend}' not reachable "
-            f"(model: '{effective_model}')",
+            f"Error: backend '{llm_cfg.backend}' not reachable (model: '{llm_cfg.model}')",
             err=True,
         )
-        if available_models:
-            typer.echo(f"  Available models: {', '.join(available_models)}", err=True)
+        if available:
+            typer.echo(f"  Available: {', '.join(available)}", err=True)
         raise typer.Exit(1)
 
-    typer.echo(f"\n── LLM backend: {effective_backend} ────────────────────────────")
-    if effective_backend == "ollama":
-        typer.echo(f"  URL: {effective_url}")
-    typer.echo(f"  Available models ({len(available_models)}):")
-    for m in available_models:
-        marker = " ◀ selected" if m.startswith(effective_model.split(":")[0]) else ""
-        typer.echo(f"    {m}{marker}")
-    typer.echo(f"\n  Model '{effective_model}' is ready for LLM analysis.")
+    typer.echo(f"\n── LLM: {llm_cfg.backend} ──────────────────────────────────")
+    if llm_cfg.backend == "ollama":
+        typer.echo(f"  URL: {llm_cfg.base_url}")
+    typer.echo(f"  Model '{llm_cfg.model}' is ready.")
+    if available:
+        typer.echo(f"  All available models: {', '.join(available)}")
 
 
 if __name__ == "__main__":

@@ -1,92 +1,68 @@
-"""JSON report formatter.
-
-Produces a structured JSON report suitable for CI pipelines and tooling.
-"""
+"""JSON report formatter."""
 
 from __future__ import annotations
 
+from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
 
-from graphsast.analysis.phase3.correlator import Finding
+from graphsast.analysis.models import Finding
+
+try:
+    from importlib.metadata import version as _pkg_version
+    _GRAPHSAST_VERSION = _pkg_version("graphsast")
+except Exception:
+    _GRAPHSAST_VERSION = "0.0.0"
 
 
-def to_json(
-    findings: list[Finding],
-    target: Path,
-    scan_run_id: str = "",
-    elapsed: float = 0.0,
-) -> dict:
-    """Convert findings to a structured report dict.
-
-    Active and suppressed findings are separated in the output so consumers
-    can choose what to act on.
-    """
-    active     = [f for f in findings if not f.is_suppressed]
-    suppressed = [f for f in findings if f.is_suppressed]
+def to_json(findings: list[Finding], target: Path, elapsed: float = 0.0) -> dict:
+    ts = datetime.now(timezone.utc).isoformat()
+    active = [f for f in findings if not f.is_false_positive]
 
     return {
-        "schema_version": "1.1",
-        "scan_run_id": scan_run_id,
-        "scanned_at": datetime.now(timezone.utc).isoformat(),
+        "graphsast_version": _GRAPHSAST_VERSION,
+        "scanned_at": ts,
         "target": str(target),
-        "elapsed_seconds": round(elapsed, 2),
+        "elapsed_seconds": elapsed,
         "summary": {
-            "active_total": len(active),
-            "suppressed_total": len(suppressed),
+            "total": len(findings),
+            "active": len(active),
+            "false_positives": len(findings) - len(active),
             "by_severity": _count_by_severity(active),
-            "by_source": _count_by_source(active),
         },
-        "findings": [_finding_to_dict(f, target) for f in active],
-        "suppressed": [_finding_to_dict(f, target) for f in suppressed],
+        "findings": [_serialise(f, target) for f in findings],
     }
 
 
-def _finding_to_dict(f: Finding, target: Path) -> dict:
+def _serialise(f: Finding, target: Path) -> dict:
     try:
-        rel = Path(f.file_path).relative_to(target).as_posix() if f.file_path else ""
+        rel = Path(f.file_path).relative_to(target).as_posix()
     except ValueError:
         rel = f.file_path
 
-    d = {
-        "id": f.id,
-        "title": f.title,
-        "cwe_id": f.cwe_id,
-        "severity": f.severity,
-        "confidence": f.confidence,
-        "message": f.message,
-        "location": {
-            "file": rel,
-            "line_start": f.line_start,
-            "line_end": f.line_end,
-            "qualified_name": f.qualified_name,
-        },
-        "sources": f.sources,
-        "rule_ids": f.rule_ids,
-        "reachability": f.extra.get("reachability"),
-        "extra": f.extra,
+    return {
+        "rule_id":         f.rule_id,
+        "title":           f.title,
+        "message":         f.message,
+        "severity":        f.effective_severity,
+        "cwe_id":          f.cwe_id,
+        "file":            rel,
+        "line_start":      f.line_start,
+        "line_end":        f.line_end,
+        "snippet":         f.snippet,
+        "llm_verdict":     f.llm_verdict,
+        "llm_severity":    f.llm_severity,
+        "llm_description": f.llm_description,
+        "llm_poc":         f.llm_poc,
+        "llm_cvss_score":  f.llm_cvss_score,
+        "llm_cvss_vector": f.llm_cvss_vector,
+        "llm_reasoning":   f.llm_reasoning,
     }
-    # LLM analysis fields (only present when LLM was enabled)
-    if f.llm_verdict is not None:
-        d["llm"] = {
-            "verdict":    f.llm_verdict,
-            "confidence": f.llm_confidence,
-            "method":     f.llm_method,
-            "reasoning":  f.llm_reasoning,
-        }
-    return d
 
 
 def _count_by_severity(findings: list[Finding]) -> dict:
     counts: dict[str, int] = {"CRITICAL": 0, "HIGH": 0, "MEDIUM": 0, "LOW": 0}
     for f in findings:
-        counts[f.severity] = counts.get(f.severity, 0) + 1
-    return counts
-
-
-def _count_by_source(findings: list[Finding]) -> dict:
-    counts: dict[str, int] = {}
-    for f in findings:
-        for src in f.sources:
-            counts[src] = counts.get(src, 0) + 1
+        sev = f.effective_severity
+        counts[sev] = counts.get(sev, 0) + 1
     return counts

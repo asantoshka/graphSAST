@@ -1,9 +1,9 @@
 # GraphSAST
 
-A security analysis tool that combines a **structural code graph**, a **vulnerability pattern database**, and an **agentic LLM layer** to find real exploitable vulnerabilities — not just pattern matches.
+A security analysis tool that combines a **structural code graph**, **Semgrep pattern scanning**, and an **agentic LLM layer** to triage vulnerabilities — not just flag them.
 
 ```
-graphsast scan ./myapp --llm --format markdown
+graphsast scan ./myapp --llm --llm-model qwen3:8b
 ```
 
 ---
@@ -14,39 +14,31 @@ graphsast scan ./myapp --llm --format markdown
 Source code
     │
     ▼
-┌─────────────────────────────────┐
-│  Phase 0 — Graph Builder        │  tree-sitter AST → nodes / edges / call args
-│  (build-graph)                  │  taint annotations, entry-point detection
-└────────────────┬────────────────┘
-                 │
-                 ▼
-┌─────────────────────────────────┐
-│  Phase 2 — Pattern Scanners     │  Pass A: Semgrep pattern matching
-│  (scan)                         │  Pass B: Taint BFS (source → sink, no sanitizer)
-│                                 │  Pass C: Structural checks (dangerous imports, etc.)
-└────────────────┬────────────────┘
-                 │
-                 ▼
-┌─────────────────────────────────┐
-│  Phase 1A — LLM Discovery       │  Autonomous LLM exploration per entry point
-│  (optional, --llm)              │  LLM reads real code, finds novel bugs
-└────────────────┬────────────────┘
-                 │
-                 ▼
-┌─────────────────────────────────┐
-│  Phase 1B — LLM Validation      │  Validates Phase 2 findings: CONFIRMED / FALSE_POSITIVE
-│  (optional, --llm)              │  3-layer: graph-only → single-shot → micro-task
-└────────────────┬────────────────┘
-                 │
-                 ▼
-┌─────────────────────────────────┐
-│  Phase 3 — Correlation          │  Dedup, merge LLM results, reachability scoring
-│                                 │  test files → LOW, auth-protected → downgrade
-└────────────────┬────────────────┘
-                 │
-                 ▼
-         Report (Markdown / JSON / SARIF)
+┌──────────────────────────────────┐
+│  Graph Builder                   │  code-review-graph: tree-sitter AST
+│                                  │  → nodes, edges, call graph (SQLite)
+│                                  │  → FTS5 index + execution flow tracing
+└───────────────┬──────────────────┘
+                │
+                ▼
+┌──────────────────────────────────┐
+│  Semgrep Scanner                 │  semgrep --config auto
+│                                  │  → structured findings (rule, file, line, snippet)
+└───────────────┬──────────────────┘
+                │
+                ▼
+┌──────────────────────────────────┐
+│  LLM Analyst  (optional --llm)   │  One finding at a time
+│                                  │  LLM investigates via 13 graph tools:
+│                                  │  read code → trace callers → check sanitisers
+│                                  │  → CONFIRMED / FALSE_POSITIVE / NEEDS_REVIEW
+└───────────────┬──────────────────┘
+                │
+                ▼
+        Report (Markdown / JSON / SARIF)
 ```
+
+The LLM is given a mandatory investigation protocol: it must read the flagged function, trace data sources (callers), check data sinks (callees), look for sanitisers, and confirm reachability from a user-controlled entry point — before it is allowed to make a verdict.
 
 ---
 
@@ -60,194 +52,132 @@ pip install graphsast
 uv add graphsast
 ```
 
-### 2. Build the vulnerability database
-
-Downloads Semgrep rules, loads OWASP WSTG signatures, and seeds built-in language rules:
+Requires Python 3.11+. Semgrep must be on PATH:
 
 ```bash
-graphsast update-vuln-db ./myapp
+pip install semgrep
 ```
 
-### 3. Build the code graph
+### 2. Scan (no LLM)
 
-Parses your source code and builds the security-annotated graph:
-
-```bash
-graphsast build-graph ./myapp
-```
-
-### 4. Scan
+Builds the graph and runs Semgrep. Fast, no model needed.
 
 ```bash
-# Fast scan (graph + Semgrep, no LLM)
 graphsast scan ./myapp
-
-# Full scan with LLM analysis (Ollama)
-graphsast scan ./myapp --llm
-
-# Full scan with Claude
-GRAPHSAST_LLM__BACKEND=claude graphsast scan ./myapp --llm
-
-# Output as JSON for CI
-graphsast scan ./myapp --format json --output report.json
-
-# One-shot: build graph + scan
-graphsast scan ./myapp --build-first
 ```
 
-Exit code `1` if any CRITICAL or HIGH active findings are found — useful for CI gates.
+### 3. Scan with LLM triage
 
----
-
-## Supported languages
-
-| Language | Parsing | Taint | Entry-point detection | Built-in signatures |
-|----------|:-------:|:-----:|:---------------------:|:-------------------:|
-| Python | ✓ | ✓ | ✓ Flask/FastAPI/Django/Click/Celery | ✓ SQLi, CMDi, SSRF, Path traversal, Deserialization |
-| JavaScript | ✓ | ✓ | ✓ Express | ✓ SQLi, CMDi, XSS, Path traversal, SSRF, SSTI |
-| TypeScript | ✓ | ✓ | ✓ NestJS, Express | ✓ (same as JS) |
-| C# | ✓ | ✓ | ✓ ASP.NET Core, Minimal API | ✓ SQLi, CMDi, XSS, Path traversal, SSRF, Deserialization |
-| Java | ✓ | ~ | ~ Spring MVC annotations | ○ planned |
-| Go | ✓ | ~ | ○ planned | ○ planned |
-
-`✓` = supported · `~` = partial · `○` = planned
+The LLM investigates each finding, reads the real source code, and returns a verdict.
 
 ```bash
-# See full capability matrix
-graphsast capabilities ./myapp
+# Ollama (local)
+ollama pull qwen3:8b
+graphsast scan ./myapp --llm --llm-model qwen3:8b
+
+# Claude (API)
+export ANTHROPIC_API_KEY=sk-ant-...
+graphsast scan ./myapp --llm --llm-backend claude
+
+# Output to file
+graphsast scan ./myapp --llm --format json --output report.json
 ```
+
+Exit code `1` if any CRITICAL or HIGH active findings are present — useful for CI gates.
 
 ---
 
 ## LLM backends
 
-GraphSAST supports multiple LLM backends. Configure via `config.toml` or env vars.
+| Backend | Config key | Notes |
+|---|---|---|
+| **Ollama** (default) | `backend = "ollama"` | Local inference; recommended models below |
+| **Claude** | `backend = "claude"` | Requires `ANTHROPIC_API_KEY` |
+| **OpenAI** | `backend = "openai"` | Requires `OPENAI_API_KEY` |
+| **AWS Bedrock** | `backend = "bedrock"` | Uses standard AWS credential chain |
 
-### Ollama (default)
+### Recommended local models (Ollama)
 
-```bash
-# Install Ollama: https://ollama.ai
-ollama pull llama3.1
+| Model | Quality | RAM |
+|---|---|---|
+| `qwen3:8b` | Best 8B — excellent tool calling + reasoning | ~6 GB |
+| `qwen2.5:14b` | Very reliable, strong code understanding | ~10 GB |
+| `qwen2.5-coder:7b` | Good for code-heavy analysis | ~5 GB |
 
-graphsast scan ./myapp --llm
-```
-
-Recommended models: `llama3.1`, `qwen2.5-coder:14b`, `deepseek-r1:14b`
-
-```bash
-graphsast scan ./myapp --llm --llm-model qwen2.5-coder:14b
-```
-
-### Claude (Anthropic)
-
-```bash
-export ANTHROPIC_API_KEY=sk-ant-...
-GRAPHSAST_LLM__BACKEND=claude graphsast scan ./myapp --llm
-```
-
-Uses `claude-opus-4-6` with adaptive thinking by default — the best model for deep security reasoning.
-
-### OpenAI _(coming soon)_
-
-```toml
-# .graphsast/config.toml
-[llm]
-backend = "openai"
-model   = "gpt-4o"
-```
-
-### AWS Bedrock _(coming soon)_
-
-```toml
-[llm]
-backend          = "bedrock"
-bedrock_region   = "us-east-1"
-bedrock_model_id = "anthropic.claude-opus-4-6-v1:0"
-```
+> **Note on qwen3:8b** — Qwen3 has a hybrid thinking mode that generates internal `<think>` tokens before each response. This improves accuracy for multi-hop reasoning but consumes context. The default `num_ctx = 32768` accounts for this.
 
 ---
 
 ## Configuration
 
-GraphSAST reads config from (highest priority last):
+Config is layered (highest priority last):
 
 1. Built-in defaults
 2. `~/.graphsast/config.toml` — user-global
 3. `<project>/.graphsast/config.toml` — project-local
-4. `GRAPHSAST_*` env vars
+4. `GRAPHSAST_*` environment variables
 5. CLI flags
 
-Copy the example config to get started:
-
-```bash
-cp docs/config.toml.example ~/.graphsast/config.toml
-```
-
-Key settings:
-
 ```toml
+# .graphsast/config.toml
+
 [llm]
-backend   = "ollama"          # "ollama" | "claude" | "openai" | "bedrock"
-model     = "llama3.1"
-timeout   = 300.0
+backend           = "ollama"
+model             = "qwen3:8b"
+num_ctx           = 32768       # context window; 32768 recommended for deep analysis
+analyst_max_turns = 15          # tool-use turns per finding; more = deeper investigation
+timeout           = 300.0
+temperature       = 0.1
 
 [output]
-format = "markdown"           # "markdown" | "json" | "sarif"
-
-[analysis]
-taint_max_depth = 10
+format = "markdown"             # markdown | json | sarif
 ```
-
-Full reference: [`docs/config.toml.example`](docs/config.toml.example)
 
 ---
 
 ## CLI reference
 
 ```
-graphsast build-graph <target>   Parse source code and build the graph
-graphsast update-vuln-db <target> Populate / refresh the vulnerability DB
-graphsast scan <target>          Run a full security scan
-graphsast query <target>         Query graph for entry points, taint paths, etc.
-graphsast capabilities <target>  Show language support matrix
-graphsast check-llm              Test LLM backend connectivity
+graphsast scan <target>      Build graph → run Semgrep → (optionally) analyse with LLM
+graphsast check-llm          Test LLM backend connectivity and list available models
 ```
 
 ### `scan` options
 
 | Flag | Default | Description |
-|------|---------|-------------|
-| `--llm` | off | Enable LLM analysis (Phase 1A + 1B) |
-| `--llm-model` | from config | Ollama model name |
-| `--llm-url` | from config | Ollama base URL |
-| `--llm-timeout` | 300s | Per-request timeout |
-| `--llm-max-ep` | 0 (all) | Max entry points for Phase 1A |
-| `--format` | markdown | Output format: `markdown` \| `json` \| `sarif` |
+|---|---|---|
+| `--llm` | off | Enable LLM analysis of each finding |
+| `--llm-backend` | from config | `ollama` \| `claude` \| `openai` \| `bedrock` |
+| `--llm-model` | from config | Model name |
+| `--llm-max-turns` | 15 | Max tool-use turns per finding (0 = use config) |
+| `--semgrep-config` | `auto` | Semgrep `--config` value or path to rules file |
+| `--semgrep-timeout` | 300s | Semgrep CLI timeout |
+| `--format` | `markdown` | Output format: `markdown` \| `json` \| `sarif` |
 | `--output` | stdout | Write report to file |
-| `--no-semgrep` | off | Skip Semgrep pass (faster) |
-| `--build-first` | off | Run `build-graph` before scanning |
-| `--language` | all | Filter Semgrep rules to one language |
-| `--db-dir` | `<target>/.graphsast` | Custom DB directory |
+| `--db-dir` | `<target>/.graphsast` | Custom directory for `graph.db` |
+| `--verbose` | off | Debug logging |
 
 ---
 
-## Vulnerability sources
+## LLM investigation tools
 
-| Source | Description |
-|--------|-------------|
-| `builtin` | Built-in language rules: arg node types, entry-point patterns, capabilities |
-| `lang_sigs` | JS/TS (Node.js/Express) and C# taint signatures |
-| `wstg` | OWASP Web Security Testing Guide v4.2 — 20 vuln classes, 219+ signatures |
-| `semgrep` | Semgrep OSS rules registry (cloned locally) |
-| `custom` | Project-local YAML overrides in `.graphsast/custom/` |
+The LLM has 13 tools to investigate each finding. It is instructed to use at least 5 before reaching a verdict.
 
-```bash
-# Refresh all sources
-graphsast update-vuln-db ./myapp
-
-# Refresh only specific sources
-graphsast update-vuln-db ./myapp --source wstg,lang_sigs
-```
+| Tool | What it does |
+|---|---|
+| `get_function` | Read a function's source code and metadata |
+| `get_callers` | Who calls this function (data sources) |
+| `get_callees` | What this function calls (data sinks) |
+| `search_nodes` | Find functions/classes by name pattern (FTS5) |
+| `read_file` | Read a file or a specific line range |
+| `get_file_summary` | All symbols in a file with line ranges |
+| `get_nodes_by_file` | Full metadata for every symbol in a file |
+| `list_entry_points` | Functions with no callers — attack surface |
+| `get_edges_for_node` | All edges: CALLS, IMPORTS_FROM, INHERITS, CONTAINS… |
+| `get_impact_radius` | Blast radius BFS from a file |
+| `get_flows` | Pre-computed execution flows ranked by criticality |
+| `get_flow_by_id` | Step-by-step path of a specific flow |
+| `trace_path` | BFS call chain between two functions |
 
 ---
 
@@ -255,18 +185,23 @@ graphsast update-vuln-db ./myapp --source wstg,lang_sigs
 
 ### Markdown (default)
 
-Human-readable report with severity grouping, reachability context, and LLM reasoning.
+Human-readable, grouped by severity. Includes LLM verdict, severity, and reasoning per finding.
 
 ### JSON
 
-Structured report for CI pipelines and tooling:
-
 ```json
 {
-  "schema_version": "1.1",
-  "summary": {"active_total": 3, "by_severity": {"CRITICAL": 1, "HIGH": 2}},
-  "findings": [...],
-  "suppressed": [...]
+  "summary": {"semgrep_findings": 9, "confirmed": 4, "false_positives": 3},
+  "findings": [
+    {
+      "rule_id": "python.django.security.injection.tainted-sql-string",
+      "file_path": "app/views.py",
+      "line_start": 42,
+      "severity": "HIGH",
+      "llm_verdict": "CONFIRMED",
+      "llm_reasoning": "User input from request.GET flows directly into cursor.execute() without parameterisation."
+    }
+  ]
 }
 ```
 
@@ -276,73 +211,29 @@ Structured report for CI pipelines and tooling:
 
 ---
 
-## Reachability scoring
-
-GraphSAST adjusts severity based on how reachable a finding is from an attacker:
-
-| Reachability | Effect |
-|---|---|
-| `test_file` | Force **LOW** — test/fixture code is not production |
-| `public` | Keep original severity — no auth check in call chain |
-| `auth_protected` | Downgrade one level — requires valid session |
-| `unknown` | Keep original severity — couldn't determine |
-
----
-
-## Adding language support
-
-Language support is data-driven — no code changes needed.
-See [`docs/adding-language-support.md`](docs/adding-language-support.md) for the complete guide.
-
----
-
-## Phase 1 LLM finding cache
-
-LLM analysis results are cached by `sha256(phase + qn + file_hash + model)`.
-
-If a file hasn't changed since the last scan, the cached verdict is used — no LLM call is made. The cache lives in `graph.db` and travels with the project.
-
----
-
-## Development
-
-```bash
-# Install dev dependencies
-uv sync --extra dev
-
-# Run tests
-uv run pytest
-
-# Lint
-uv run ruff check .
-```
-
-### Project structure
+## Project structure
 
 ```
 graphsast/
-├── cli/            CLI commands (Typer)
-├── graph_db/       SecurityGraphStore (SQLite), migrations
-├── ingestion/      tree-sitter parsing pipeline
-├── vuln_db/        Vulnerability pattern DB and importers
-│   └── importers/  builtin_lang_rules, owasp_wstg, lang_sigs, semgrep, custom
-├── analysis/       Scanners (Phase 2) and correlator (Phase 3)
-│   ├── phase2/     Semgrep runner, taint BFS, structure analyser
-│   └── phase3/     Correlator, LLM merge, reachability scorer
-├── llm/            LLM backends, Phase 1A/1B, cache
-│   ├── base.py     LLMClient ABC
-│   ├── factory.py  Backend selector
-│   ├── ollama_client.py
-│   ├── claude_client.py
-│   ├── cache.py    Phase 1 finding cache
-│   ├── phase1a.py  Autonomous LLM discovery
-│   └── phase1b.py  LLM validation (3-layer)
-├── output/         Markdown, JSON, SARIF formatters
+├── cli/            CLI commands (scan, check-llm)
+├── analysis/       scanner.py, analyst.py, semgrep.py, models.py
+├── graph/          client.py — GraphClient (13 read-only tools)
+├── mcp/            tools.py — OpenAI tool schemas + executor
+├── llm/            base.py, factory.py, ollama/claude/openai/bedrock clients
+├── output/         markdown.py, json_report.py, sarif.py
+├── vuln_db/        Vulnerability DB (populated, not yet used in analysis)
 └── config.py       pydantic-settings loader
-docs/
-├── adding-language-support.md
-└── config.toml.example
+code_review_graph/  Upstream graph builder (tree-sitter, not modified)
 ```
+
+---
+
+## Planned
+
+- **API route extraction** — extract HTTP paths (`GET /api/users`) from framework code to surface the exact URL an attacker would target. Language-specific (Flask, Express, Spring, Gin, etc.); deferred until primary target stack is known.
+- **Per-finding LLM cache** — skip re-analysis when source file hasn't changed since last scan
+- **PoC/exploitation hints** — when a finding is CONFIRMED, include a reproduction steps block in the report
+- **`graphsast review`** — interactively mark findings as TP/FP, suppress FPs on future scans
 
 ---
 

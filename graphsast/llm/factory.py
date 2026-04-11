@@ -32,7 +32,8 @@ def get_llm_client(cfg: "GraphSASTSettings") -> LLMClient:  # type: ignore[name-
 
     Raises:
         ValueError: If cfg.llm.backend is not a recognised value.
-        ImportError: If the 'anthropic' package is missing and backend='claude'.
+        ImportError: If the required package is missing for the chosen backend
+                     ('anthropic' for claude/bedrock, 'openai' for openai).
     """
     backend = cfg.llm.backend.lower()
 
@@ -61,7 +62,32 @@ def get_llm_client(cfg: "GraphSASTSettings") -> LLMClient:  # type: ignore[name-
             timeout=cfg.llm.timeout,
         )
 
+    if backend == "openai":
+        from graphsast.llm.openai_client import OpenAIClient
+        from graphsast.llm.openai_client import DEFAULT_MODEL as _OPENAI_DEFAULT
+        model = cfg.llm.model if cfg.llm.model != "llama3.1" else _OPENAI_DEFAULT
+        return OpenAIClient(
+            api_key=cfg.llm.openai_api_key,   # None → reads OPENAI_API_KEY
+            model=model,
+            temperature=cfg.llm.temperature,
+            timeout=cfg.llm.timeout,
+        )
+
+    if backend == "bedrock":
+        from graphsast.llm.bedrock_client import BedrockClient
+        from graphsast.llm.bedrock_client import DEFAULT_MODEL as _BEDROCK_DEFAULT
+        model = cfg.llm.model if cfg.llm.model != "llama3.1" else _BEDROCK_DEFAULT
+        return BedrockClient(
+            model=model,
+            aws_region=cfg.llm.bedrock_region,
+            aws_access_key=cfg.llm.bedrock_access_key,
+            aws_secret_key=cfg.llm.bedrock_secret_key,
+            aws_session_token=cfg.llm.bedrock_session_token,
+            temperature=cfg.llm.temperature,
+            timeout=cfg.llm.timeout,
+        )
+
     raise ValueError(
         f"Unknown LLM backend: '{cfg.llm.backend}'.  "
-        "Valid values: 'ollama', 'claude'."
+        "Valid values: 'ollama', 'claude', 'openai', 'bedrock'."
     )

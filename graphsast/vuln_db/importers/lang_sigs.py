@@ -29,17 +29,20 @@ def _sig(
     arg_index: int | None = None,
     notes: str = "",
 ) -> dict:
-    d: dict = {
-        "language":     lang,
-        "name":         name,
-        "role":         role,
-        "vuln_class_id": vuln_class,
+    # id: deterministic, kebab-safe slug derived from lang + role + name
+    safe_name = name.replace(".", "-").replace("_", "-").replace("[", "").replace("]", "").replace("*", "").lower()
+    sig_id = f"{lang}-{role.lower()}-{safe_name}"
+    return {
+        "id":                sig_id,
+        "name":              name,
+        "qualified_pattern": name,
+        "language":          lang,
+        "sig_type":          role,          # SOURCE | SINK | SANITIZER
+        "vuln_class_id":     vuln_class,
+        "cwe_ids":           [],
+        "description":       notes,
+        "source":            "builtin",
     }
-    if arg_index is not None:
-        d["arg_index"] = arg_index
-    if notes:
-        d["notes"] = notes
-    return d
 
 
 # ──────────────────────────────────────────────────────────────────────────────

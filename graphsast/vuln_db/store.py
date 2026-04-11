@@ -224,6 +224,42 @@ class VulnStore:
         return [dict(r) for r in rows]
 
     # ------------------------------------------------------------------
+    # entry_point_strategies
+    # ------------------------------------------------------------------
+
+    def upsert_entry_point_strategy(self, row: dict) -> None:
+        config = row.get("config", {})
+        if not isinstance(config, str):
+            config = json.dumps(config)
+        self._conn.execute(
+            """INSERT OR REPLACE INTO entry_point_strategies
+               (id, language, strategy, config, notes)
+               VALUES (:id, :language, :strategy, :config, :notes)""",
+            {
+                "id":       row["id"],
+                "language": row["language"],
+                "strategy": row["strategy"],
+                "config":   config,
+                "notes":    row.get("notes"),
+            },
+        )
+
+    def get_entry_point_strategies(self, language: str) -> list[dict]:
+        """Return strategy rows for a language with config already parsed to dict."""
+        rows = self._conn.execute(
+            "SELECT * FROM entry_point_strategies WHERE language = ?", (language,)
+        ).fetchall()
+        result = []
+        for r in rows:
+            d = dict(r)
+            try:
+                d["config"] = json.loads(d["config"])
+            except Exception:
+                d["config"] = {}
+            result.append(d)
+        return result
+
+    # ------------------------------------------------------------------
     # language_capabilities
     # ------------------------------------------------------------------
 

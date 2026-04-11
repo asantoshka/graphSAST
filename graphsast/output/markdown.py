@@ -1,175 +1,152 @@
-"""Markdown report formatter.
-
-Produces a human-readable Markdown report.
-"""
+"""Markdown report formatter."""
 
 from __future__ import annotations
 
 from datetime import datetime, timezone
 from pathlib import Path
 
-from graphsast.analysis.phase3.correlator import Finding
+from graphsast.analysis.models import Finding
 
-_SEV_EMOJI = {
-    "CRITICAL": "🔴",
-    "HIGH":     "🟠",
-    "MEDIUM":   "🟡",
-    "LOW":      "🔵",
-}
-
-_LLM_VERDICT_ICON = {
-    "CONFIRMED":      "✅",
-    "FALSE_POSITIVE": "❌",
-    "UNCERTAIN":      "❓",
-}
-
-_SOURCE_DESC = {
-    "graph_taint":   "Graph taint BFS (source→sink path with no sanitizer)",
-    "semgrep":       "Semgrep pattern matching",
-    "missing_check": "Missing security check in call chain",
-    "structure":     "Structural code analysis (dangerous imports, dead code, etc.)",
-    "llm_1a":        "LLM autonomous discovery (Phase 1A)",
-    "llm_1b":        "LLM validation of suspect path (Phase 1B)",
-}
+_SEV_ICON = {"CRITICAL": "🔴", "HIGH": "🟠", "MEDIUM": "🟡", "LOW": "🔵"}
+_VERDICT_ICON = {"CONFIRMED": "✅", "FALSE_POSITIVE": "❌", "NEEDS_REVIEW": "❓"}
 
 
-def to_markdown(
-    findings: list[Finding],
-    target: Path,
-    scan_run_id: str = "",
-    elapsed: float = 0.0,
-) -> str:
-    """Render findings as a Markdown string."""
-    active     = [f for f in findings if not f.is_suppressed]
-    suppressed = [f for f in findings if f.is_suppressed]
-
-    lines: list[str] = []
-
+def to_markdown(findings: list[Finding], target: Path, elapsed: float = 0.0) -> str:
     ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
-    lines.append("# GraphSAST Security Report")
-    lines.append("")
-    lines.append(f"**Target:** `{target}`  ")
-    lines.append(f"**Scanned:** {ts}  ")
-    lines.append(f"**Elapsed:** {elapsed:.1f}s  ")
-    if scan_run_id:
-        lines.append(f"**Run ID:** `{scan_run_id}`  ")
-    lines.append("")
 
-    # Summary table (active only)
-    counts = _count_by_severity(active)
-    lines.append("## Summary")
-    lines.append("")
-    lines.append("| Severity | Count |")
-    lines.append("|---|---|")
+    active     = [f for f in findings if not f.is_false_positive]
+    false_pos  = [f for f in findings if f.is_false_positive]
+
+    lines: list[str] = [
+        "# GraphSAST Security Report",
+        "",
+        f"**Target:** `{target}`  ",
+        f"**Scanned:** {ts}  ",
+        f"**Elapsed:** {elapsed:.1f}s  ",
+        "",
+        "## Summary",
+        "",
+        "| Severity | Count |",
+        "|---|---|",
+    ]
+
+    counts: dict[str, int] = {}
+    for f in active:
+        sev = f.effective_severity
+        counts[sev] = counts.get(sev, 0) + 1
+
     for sev in ("CRITICAL", "HIGH", "MEDIUM", "LOW"):
-        icon = _SEV_EMOJI.get(sev, "")
+        icon = _SEV_ICON.get(sev, "")
         lines.append(f"| {icon} {sev} | {counts.get(sev, 0)} |")
     lines.append(f"| **Active total** | **{len(active)}** |")
-    if suppressed:
-        lines.append(f"| ~~Suppressed (FP)~~ | {len(suppressed)} |")
+    if false_pos:
+        lines.append(f"| ~~False positives~~ | {len(false_pos)} |")
     lines.append("")
 
     if not active:
-        lines.append("> No active findings detected.")
+        lines.append("> No active findings.")
     else:
-        # Active findings grouped by severity
         for sev in ("CRITICAL", "HIGH", "MEDIUM", "LOW"):
-            sev_findings = [f for f in active if f.severity == sev]
-            if not sev_findings:
+            bucket = [f for f in active if f.effective_severity == sev]
+            if not bucket:
                 continue
-            icon = _SEV_EMOJI.get(sev, "")
-            lines.append(f"## {icon} {sev} ({len(sev_findings)})")
+            icon = _SEV_ICON.get(sev, "")
+            lines.append(f"## {icon} {sev} ({len(bucket)})")
             lines.append("")
-            for i, f in enumerate(sev_findings, 1):
-                lines.extend(_render_finding(f, i, target))
+            for i, f in enumerate(bucket, 1):
+                lines.extend(_render(f, i, target))
 
-    # Suppressed section (collapsed)
-    if suppressed:
-        lines.append("---")
-        lines.append("## Suppressed findings (LLM ruled false positive)")
-        lines.append("")
-        lines.append("<details><summary>Show suppressed findings</summary>")
-        lines.append("")
-        for i, f in enumerate(suppressed, 1):
-            lines.extend(_render_finding(f, i, target, suppressed=True))
+    if false_pos:
+        lines += [
+            "---",
+            "## False positives (LLM ruled out)",
+            "",
+            "<details><summary>Show</summary>",
+            "",
+        ]
+        for i, f in enumerate(false_pos, 1):
+            lines.extend(_render(f, i, target))
         lines.append("</details>")
-        lines.append("")
 
-    # Sources legend
-    all_sources = sorted({s for f in findings for s in f.sources})
-    lines.append("---")
-    lines.append("## Detection sources")
-    lines.append("")
-    for src in all_sources:
-        lines.append(f"- **{src}**: {_SOURCE_DESC.get(src, src)}")
-    lines.append("")
-    lines.append("---")
-    lines.append("*Generated by [GraphSAST](https://github.com/your-org/graphsast)*")
-
+    lines += ["", "---", "*Generated by GraphSAST*"]
     return "\n".join(lines)
 
 
-def _render_finding(f: Finding, index: int, target: Path, suppressed: bool = False) -> list[str]:
-    lines = []
+def _render(f: Finding, idx: int, target: Path) -> list[str]:
     try:
-        rel = Path(f.file_path).relative_to(target).as_posix() if f.file_path else "unknown"
+        rel = Path(f.file_path).relative_to(target).as_posix()
     except ValueError:
         rel = f.file_path or "unknown"
 
-    loc = f"`{rel}`" if rel else ""
-    if f.line_start:
-        loc += f" line {f.line_start}"
+    loc = f"`{rel}` line {f.line_start}" if f.line_start else f"`{rel}`"
 
-    title = f.title
-    if suppressed:
-        title = f"~~{title}~~"
+    # CVSS badge
+    cvss_cell = "—"
+    if f.llm_cvss_score is not None:
+        score = f.llm_cvss_score
+        rating = (
+            "Critical" if score >= 9.0 else
+            "High"     if score >= 7.0 else
+            "Medium"   if score >= 4.0 else
+            "Low"
+        )
+        cvss_cell = f"**{score:.1f}** ({rating})"
+        if f.llm_cvss_vector:
+            cvss_cell += f"<br>`{f.llm_cvss_vector}`"
 
-    lines.append(f"### {index}. {title}")
-    lines.append("")
-    lines.append("| Field | Value |")
-    lines.append("|---|---|")
-    lines.append(f"| **CWE** | {f.cwe_id or '—'} |")
-    lines.append(f"| **Severity** | {f.severity} |")
-    lines.append(f"| **Confidence** | {f.confidence} |")
-    if f.extra.get("reachability"):
-        lines.append(f"| **Reachability** | {f.extra['reachability']} |")
-    lines.append(f"| **Location** | {loc or '—'} |")
-    if f.qualified_name:
-        lines.append(f"| **Function** | `{f.qualified_name}` |")
-    lines.append(f"| **Sources** | {', '.join(f.sources)} |")
+    lines = [
+        f"### {idx}. {f.title}",
+        "",
+        "| Field | Value |",
+        "|---|---|",
+        f"| **Rule** | `{f.rule_id}` |",
+        f"| **Severity** | {f.effective_severity} |",
+        f"| **CVSS** | {cvss_cell} |",
+        f"| **CWE** | {f.cwe_id or '—'} |",
+        f"| **Location** | {loc} |",
+    ]
+
     if f.llm_verdict:
-        icon = _LLM_VERDICT_ICON.get(f.llm_verdict, "")
-        lines.append(f"| **LLM verdict** | {icon} {f.llm_verdict} ({f.llm_confidence}) via {f.llm_method} |")
-    lines.append("")
-    lines.append(f"> {f.message}")
+        icon = _VERDICT_ICON.get(f.llm_verdict, "")
+        lines.append(f"| **LLM verdict** | {icon} {f.llm_verdict} |")
+
     lines.append("")
 
-    # LLM reasoning
+    # Description (LLM) — more detailed than the Semgrep message
+    if f.llm_description:
+        lines += [f.llm_description, ""]
+    else:
+        lines += [f"> {f.message}", ""]
+
+    # Code snippet
+    if f.snippet:
+        lines += [
+            "**Vulnerable code:**",
+            "",
+            f"```\n{f.snippet}\n```",
+            "",
+        ]
+
+    # PoC
+    if f.llm_poc:
+        lines += [
+            "<details><summary>PoC / Exploit scenario</summary>",
+            "",
+            f.llm_poc,
+            "",
+            "</details>",
+            "",
+        ]
+
+    # Reasoning (collapsed)
     if f.llm_reasoning:
-        lines.append("<details><summary>LLM reasoning</summary>")
-        lines.append("")
-        lines.append(f.llm_reasoning)
-        lines.append("")
-        lines.append("</details>")
-        lines.append("")
-
-    # Taint path
-    if f.extra.get("taint_path"):
-        path_nodes = f.extra["taint_path"]
-        if path_nodes:
-            lines.append(f"**Taint path:** `{'` → `'.join(str(n) for n in path_nodes)}`")
-            lines.append("")
-
-    # Phase 1B disagreement note
-    if f.extra.get("llm_1b_disagreement"):
-        lines.append(f"> ⚠️ Note: {f.extra['llm_1b_disagreement']}")
-        lines.append("")
+        lines += [
+            "<details><summary>LLM reasoning</summary>",
+            "",
+            f.llm_reasoning,
+            "",
+            "</details>",
+            "",
+        ]
 
     return lines
-
-
-def _count_by_severity(findings: list[Finding]) -> dict:
-    counts: dict[str, int] = {"CRITICAL": 0, "HIGH": 0, "MEDIUM": 0, "LOW": 0}
-    for f in findings:
-        counts[f.severity] = counts.get(f.severity, 0) + 1
-    return counts
