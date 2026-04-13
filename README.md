@@ -10,6 +10,10 @@ graphsast scan ./myapp --llm --llm-model qwen3:8b
 
 ## How it works
 
+GraphSAST has two analysis modes that share a common graph layer.
+
+### `scan` — Semgrep-guided triage
+
 ```
 Source code
     │
@@ -22,24 +26,58 @@ Source code
                 │
                 ▼
 ┌──────────────────────────────────┐
-│  Semgrep Scanner                 │  semgrep --config auto
+│  Semgrep Scanner                 │  semgrep --config auto (or custom rules)
 │                                  │  → structured findings (rule, file, line, snippet)
+│                                  │  → deduplicated (same location + CWE = one finding)
 └───────────────┬──────────────────┘
                 │
                 ▼
 ┌──────────────────────────────────┐
-│  LLM Analyst  (optional --llm)   │  One finding at a time
+│  LLM Analyst  (optional --llm)   │  Per finding — skips if file unchanged (cache)
 │                                  │  LLM investigates via 13 graph tools:
 │                                  │  read code → trace callers → check sanitisers
 │                                  │  → CONFIRMED / FALSE_POSITIVE / NEEDS_REVIEW
-│                                  │  + CVSS score, PoC exploit scenario
+│                                  │  + CVSS score, CVSS vector, PoC exploit scenario
+└───────────────┬──────────────────┘
+                │
+                ▼
+     FindingStore (SQLite)          persists verdicts across runs; diffs new/fixed/recurring
+                │
+                ▼
+        Report (Markdown / JSON / SARIF)
+```
+
+### `hunt` — Autonomous discovery (no Semgrep)
+
+```
+Source code
+    │
+    ▼
+┌──────────────────────────────────┐
+│  Graph Builder                   │  (same as above)
+└───────────────┬──────────────────┘
+                │
+                ▼
+┌──────────────────────────────────┐
+│  Attack Surface Enumeration      │  list_entry_points() — functions with no callers
+│                                  │  get_flows()         — pre-computed execution flows
+│                                  │  → deduplicated (entry points already in a flow skipped)
+└───────────────┬──────────────────┘
+                │
+                ▼
+┌──────────────────────────────────┐
+│  LLM Hunter                      │  ReAct tool loop per entry point / flow
+│                                  │  traces data forward from source to sink
+│                                  │  checks sanitisers, confirms user-controllability
+│                                  │  → zero or more FINDING blocks per candidate
+│                                  │  + CVSS score, CVSS vector, PoC exploit scenario
 └───────────────┬──────────────────┘
                 │
                 ▼
         Report (Markdown / JSON / SARIF)
 ```
 
-The LLM is given a mandatory investigation protocol: it must read the flagged function, trace data sources (callers), check data sinks (callees), look for sanitisers, and confirm reachability from a user-controlled entry point — before it is allowed to make a verdict. Each confirmed finding is enriched with a CVSS score, CVSS vector, vulnerability description, and a PoC exploit scenario.
+Both modes use the same 13-tool graph API. The LLM must follow a mandatory investigation protocol — read the code, trace data flow, check sanitisers, confirm reachability — before it can emit a verdict. Confirmed findings are enriched with a CVSS score, CVSS vector, vulnerability description, and PoC exploit scenario.
 
 ---
 
@@ -143,7 +181,6 @@ graphsast hunt <target>      Autonomous LLM-driven security hunt from entry poin
 graphsast findings <target>  List stored findings; diff between runs
 graphsast describe <target>  Graph stats + optional LLM narrative
 graphsast check-llm          Test LLM backend connectivity and list available models
-graphsast mcp-serve          Expose the 13 graph tools over the MCP protocol
 ```
 
 ### `scan` options
@@ -191,8 +228,6 @@ The LLM has 13 tools to investigate each finding. It is instructed to use at lea
 | `get_flow_by_id` | Step-by-step path of a specific flow |
 | `trace_path` | BFS call chain between two functions |
 
-These same tools are available to external agents via `graphsast mcp-serve` (MCP protocol).
-
 ---
 
 ## Report output
@@ -232,7 +267,7 @@ Human-readable, grouped by severity. Each confirmed finding includes LLM verdict
 
 ```
 graphsast/
-├── cli/            CLI commands (scan, hunt, findings, describe, check-llm, mcp-serve)
+├── cli/            CLI commands (scan, hunt, findings, describe, check-llm)
 ├── analysis/       scanner.py, analyst.py, hunter.py, semgrep.py, models.py
 ├── graph/          client.py — GraphClient (13 read-only tools)
 ├── mcp/            tools.py — MCP server + OpenAI tool schemas + executor
