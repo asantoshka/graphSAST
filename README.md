@@ -289,6 +289,13 @@ code_review_graph/  Upstream graph builder (tree-sitter, not modified)
 
 ---
 
+## Acknowledgements
+
+- **[code-review-graph](https://github.com/tirth8205/code-review-graph)** (MIT) by Tirth Patel — the tree-sitter graph builder that powers GraphSAST's structural analysis layer.
+- **[Semgrep](https://semgrep.dev)** (LGPL-2.1) by Semgrep Inc. — the pattern scanner used for initial finding discovery.
+
+---
+
 ## License
 
 MIT
