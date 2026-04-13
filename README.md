@@ -32,13 +32,14 @@ Source code
 │                                  │  LLM investigates via 13 graph tools:
 │                                  │  read code → trace callers → check sanitisers
 │                                  │  → CONFIRMED / FALSE_POSITIVE / NEEDS_REVIEW
+│                                  │  + CVSS score, PoC exploit scenario
 └───────────────┬──────────────────┘
                 │
                 ▼
         Report (Markdown / JSON / SARIF)
 ```
 
-The LLM is given a mandatory investigation protocol: it must read the flagged function, trace data sources (callers), check data sinks (callees), look for sanitisers, and confirm reachability from a user-controlled entry point — before it is allowed to make a verdict.
+The LLM is given a mandatory investigation protocol: it must read the flagged function, trace data sources (callers), check data sinks (callees), look for sanitisers, and confirm reachability from a user-controlled entry point — before it is allowed to make a verdict. Each confirmed finding is enriched with a CVSS score, CVSS vector, vulnerability description, and a PoC exploit scenario.
 
 ---
 
@@ -68,7 +69,7 @@ graphsast scan ./myapp
 
 ### 3. Scan with LLM triage
 
-The LLM investigates each finding, reads the real source code, and returns a verdict.
+The LLM investigates each finding, reads the real source code, and returns a verdict with CVSS score and PoC exploit scenario.
 
 ```bash
 # Ollama (local)
@@ -83,6 +84,15 @@ graphsast scan ./myapp --llm --llm-backend claude
 graphsast scan ./myapp --llm --format json --output report.json
 ```
 
+### 4. Autonomous security hunt
+
+Drives the LLM from entry points and execution flows — finds issues Semgrep rules don't cover.
+
+```bash
+graphsast hunt ./myapp --llm-backend claude
+graphsast hunt ./myapp --llm-backend claude --full-hunt   # no cap on entry points/flows
+```
+
 Exit code `1` if any CRITICAL or HIGH active findings are present — useful for CI gates.
 
 ---
@@ -91,20 +101,10 @@ Exit code `1` if any CRITICAL or HIGH active findings are present — useful for
 
 | Backend | Config key | Notes |
 |---|---|---|
-| **Ollama** (default) | `backend = "ollama"` | Local inference; recommended models below |
+| **Ollama** (default) | `backend = "ollama"` | Local inference |
 | **Claude** | `backend = "claude"` | Requires `ANTHROPIC_API_KEY` |
 | **OpenAI** | `backend = "openai"` | Requires `OPENAI_API_KEY` |
 | **AWS Bedrock** | `backend = "bedrock"` | Uses standard AWS credential chain |
-
-### Recommended local models (Ollama)
-
-| Model | Quality | RAM |
-|---|---|---|
-| `qwen3:8b` | Best 8B — excellent tool calling + reasoning | ~6 GB |
-| `qwen2.5:14b` | Very reliable, strong code understanding | ~10 GB |
-| `qwen2.5-coder:7b` | Good for code-heavy analysis | ~5 GB |
-
-> **Note on qwen3:8b** — Qwen3 has a hybrid thinking mode that generates internal `<think>` tokens before each response. This improves accuracy for multi-hop reasoning but consumes context. The default `num_ctx = 32768` accounts for this.
 
 ---
 
@@ -139,7 +139,11 @@ format = "markdown"             # markdown | json | sarif
 
 ```
 graphsast scan <target>      Build graph → run Semgrep → (optionally) analyse with LLM
+graphsast hunt <target>      Autonomous LLM-driven security hunt from entry points/flows
+graphsast findings <target>  List stored findings; diff between runs
+graphsast describe <target>  Graph stats + optional LLM narrative
 graphsast check-llm          Test LLM backend connectivity and list available models
+graphsast mcp-serve          Expose the 13 graph tools over the MCP protocol
 ```
 
 ### `scan` options
@@ -150,12 +154,20 @@ graphsast check-llm          Test LLM backend connectivity and list available mo
 | `--llm-backend` | from config | `ollama` \| `claude` \| `openai` \| `bedrock` |
 | `--llm-model` | from config | Model name |
 | `--llm-max-turns` | 15 | Max tool-use turns per finding (0 = use config) |
+| `--full-hunt` | off | No cap on entry points / flows analysed |
 | `--semgrep-config` | `auto` | Semgrep `--config` value or path to rules file |
 | `--semgrep-timeout` | 300s | Semgrep CLI timeout |
 | `--format` | `markdown` | Output format: `markdown` \| `json` \| `sarif` |
 | `--output` | stdout | Write report to file |
 | `--db-dir` | `<target>/.graphsast` | Custom directory for `graph.db` |
 | `--verbose` | off | Debug logging |
+
+### `findings` options
+
+| Flag | Default | Description |
+|---|---|---|
+| `--detail` | off | Full per-finding panel with reasoning and PoC |
+| `--diff` | — | Compare two scan runs |
 
 ---
 
@@ -179,13 +191,15 @@ The LLM has 13 tools to investigate each finding. It is instructed to use at lea
 | `get_flow_by_id` | Step-by-step path of a specific flow |
 | `trace_path` | BFS call chain between two functions |
 
+These same tools are available to external agents via `graphsast mcp-serve` (MCP protocol).
+
 ---
 
 ## Report output
 
 ### Markdown (default)
 
-Human-readable, grouped by severity. Includes LLM verdict, severity, and reasoning per finding.
+Human-readable, grouped by severity. Each confirmed finding includes LLM verdict, CVSS score, reasoning, and a PoC exploit scenario.
 
 ### JSON
 
@@ -199,7 +213,10 @@ Human-readable, grouped by severity. Includes LLM verdict, severity, and reasoni
       "line_start": 42,
       "severity": "HIGH",
       "llm_verdict": "CONFIRMED",
-      "llm_reasoning": "User input from request.GET flows directly into cursor.execute() without parameterisation."
+      "cvss_score": 8.1,
+      "cvss_vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:L/A:N",
+      "llm_reasoning": "User input from request.GET flows directly into cursor.execute() without parameterisation.",
+      "poc_scenario": "Send GET /search?q=1' OR '1'='1 to dump all rows."
     }
   ]
 }
@@ -215,10 +232,10 @@ Human-readable, grouped by severity. Includes LLM verdict, severity, and reasoni
 
 ```
 graphsast/
-├── cli/            CLI commands (scan, check-llm)
-├── analysis/       scanner.py, analyst.py, semgrep.py, models.py
+├── cli/            CLI commands (scan, hunt, findings, describe, check-llm, mcp-serve)
+├── analysis/       scanner.py, analyst.py, hunter.py, semgrep.py, models.py
 ├── graph/          client.py — GraphClient (13 read-only tools)
-├── mcp/            tools.py — OpenAI tool schemas + executor
+├── mcp/            tools.py — MCP server + OpenAI tool schemas + executor
 ├── llm/            base.py, factory.py, ollama/claude/openai/bedrock clients
 ├── output/         markdown.py, json_report.py, sarif.py
 ├── vuln_db/        Vulnerability DB (populated, not yet used in analysis)
@@ -230,10 +247,10 @@ code_review_graph/  Upstream graph builder (tree-sitter, not modified)
 
 ## Planned
 
-- **API route extraction** — extract HTTP paths (`GET /api/users`) from framework code to surface the exact URL an attacker would target. Language-specific (Flask, Express, Spring, Gin, etc.); deferred until primary target stack is known.
-- **Per-finding LLM cache** — skip re-analysis when source file hasn't changed since last scan
-- **PoC/exploitation hints** — when a finding is CONFIRMED, include a reproduction steps block in the report
+- **Semgrep autofix surfacing** — surface `fix:` patches alongside findings in reports
+- **Parallel LLM analysis** — `--llm-workers N` flag for concurrent finding analysis
 - **`graphsast review`** — interactively mark findings as TP/FP, suppress FPs on future scans
+- **API route extraction** — extract HTTP paths (`GET /api/users`) from framework code (Flask, Express, Spring, Gin…)
 
 ---
 
