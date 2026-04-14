@@ -88,7 +88,12 @@ SEVERITY: <CRITICAL|HIGH|MEDIUM|LOW>
 CVSS: <numeric score 0.0–10.0, e.g. 8.1>
 CVSS_VECTOR: <CVSS:3.1/AV:…/AC:…/PR:…/UI:…/S:…/C:…/I:…/A:… or N/A>
 DESCRIPTION: <two to four sentences — what the vulnerability is, why it is dangerous>
-POC: <concrete step-by-step exploit scenario an attacker would use; or "N/A" for false positives>
+POC: <Step-by-step exploit. Must include: (1) exact payload or input value, (2) how to deliver it
+     (HTTP request with headers/params, CLI argument, file content, env var, etc.),
+     (3) what happens on the server/system, (4) what the attacker gains.
+     Example for SQLi: "Send POST /login with body username=admin'--&password=x — the query
+     becomes SELECT * FROM users WHERE username='admin'--'… returning admin row without password check."
+     Use "N/A" only for FALSE_POSITIVE verdicts.>
 REASONING: <one to three sentences — what you read and what you found>
 """
 

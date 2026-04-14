@@ -267,7 +267,19 @@ def scan(
             hunt_findings: list[_Finding] = []
             with _FindingStore(graph_db) as store:
                 hunt_run_id = store.start_run(str(target), "hunter", hunt_llm_cfg.model)
+                seen_fps: set[str] = set()
+                new_count = 0
+                recurring_count = 0
+                dedup_count = 0
                 for raw in raw_hunt:
+                    fp = _FindingStore.make_fingerprint(
+                        raw["rule_id"], raw["file_path"], raw["line_start"]
+                    )
+                    # Deduplicate within this run (same vuln found via multiple entry points)
+                    if fp in seen_fps:
+                        dedup_count += 1
+                        continue
+                    seen_fps.add(fp)
                     hf = _Finding(
                         rule_id=raw["rule_id"],
                         title=raw["title"],
@@ -284,13 +296,18 @@ def scan(
                     hf.llm_poc          = raw.get("poc")
                     hf.llm_cvss_score   = raw.get("cvss_score")
                     hf.llm_cvss_vector  = raw.get("cvss_vector")
-                    store.upsert_finding(hf, hunt_run_id, source="hunter")
+                    _, is_new = store.upsert_finding(hf, hunt_run_id, source="hunter")
+                    if is_new:
+                        new_count += 1
+                    else:
+                        recurring_count += 1
                     hunt_findings.append(hf)
+                unique_total = len(hunt_findings)
                 hunt_summary = {
                     "run_id": hunt_run_id, "semgrep_findings": 0,
-                    "deduplicated": 0, "new_findings": len(raw_hunt),
-                    "recurring": 0, "fixed": 0, "cache_hits": 0,
-                    "llm_analysed": len(raw_hunt), "confirmed": len(raw_hunt),
+                    "deduplicated": dedup_count, "new_findings": new_count,
+                    "recurring": recurring_count, "fixed": 0, "cache_hits": 0,
+                    "llm_analysed": unique_total, "confirmed": unique_total,
                     "false_positives": 0, "needs_review": 0, "elapsed_seconds": 0,
                 }
                 store.finish_run(hunt_run_id, hunt_summary)

@@ -104,7 +104,12 @@ FUNCTION: <qualified function name>
 CVSS: <numeric score 0.0–10.0, e.g. 9.8>
 CVSS_VECTOR: <CVSS:3.1/AV:…/AC:…/PR:…/UI:…/S:…/C:…/I:…/A:…>
 DESCRIPTION: <two to four sentences — what the vulnerability is and why it is dangerous>
-POC: <concrete step-by-step exploit an attacker would perform>
+POC: <Step-by-step exploit. Must include: (1) exact payload or input value, (2) how to deliver it
+     (HTTP request with method/path/headers/body, CLI arg, file, env var, etc.),
+     (3) what the application does with it, (4) what the attacker gains (data exfil, RCE, bypass…).
+     Example for SQLi: "POST /search HTTP/1.1\nContent-Type: application/x-www-form-urlencoded\n\nq='; DROP TABLE users;--
+     — the raw input is concatenated into the query without escaping, dropping the users table."
+     Be specific to this codebase — reference actual function names, routes, and parameter names you found.>
 REASONING: <two to four sentences — what you read, how input reaches the sink,
             why it is exploitable, what sanitisation is missing>
 FINDING_END
