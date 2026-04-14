@@ -1,0 +1,167 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>GraphSAST</title>
+  <link rel="stylesheet" href="/static/style.css" />
+  <!-- Cytoscape.js from CDN -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/cytoscape/3.28.1/cytoscape.min.js"></script>
+  <!-- Dagre layout engine -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/dagre/0.8.5/dagre.min.js"></script>
+  <!-- Cytoscape-dagre adapter -->
+  <script src="https://cdn.jsdelivr.net/npm/cytoscape-dagre@2.5.0/cytoscape-dagre.min.js"></script>
+</head>
+<body>
+  <!-- Header -->
+  <header>
+    <div class="header-left">
+      <span class="logo">GraphSAST</span>
+      <span id="target-label" class="target-label"></span>
+    </div>
+    <nav>
+      <button class="nav-btn active" data-view="graph">Graph</button>
+      <button class="nav-btn" data-view="findings">Findings</button>
+      <button class="nav-btn" data-view="runs">Scan Runs</button>
+    </nav>
+  </header>
+
+  <!-- Stats bar -->
+  <div id="stats-bar" class="stats-bar">
+    <span class="stat-item" id="stat-nodes">— nodes</span>
+    <span class="stat-sep">·</span>
+    <span class="stat-item" id="stat-edges">— edges</span>
+    <span class="stat-sep">·</span>
+    <span class="stat-item critical" id="stat-critical">— CRITICAL</span>
+    <span class="stat-sep">·</span>
+    <span class="stat-item high" id="stat-high">— HIGH</span>
+    <span class="stat-sep">·</span>
+    <span class="stat-item medium" id="stat-medium">— MEDIUM</span>
+    <span class="stat-sep">·</span>
+    <span class="stat-item low" id="stat-low">— LOW</span>
+  </div>
+
+  <!-- ── Graph View ── -->
+  <div id="view-graph" class="view active">
+    <div class="graph-toolbar">
+      <input id="graph-search" type="text" placeholder="Search node..." autocomplete="off" />
+      <button id="btn-search-node" class="btn-sm">Find</button>
+      <span class="sep">|</span>
+      <label><input type="checkbox" id="toggle-tests" /> Show tests</label>
+      <label><input type="checkbox" id="toggle-files" /> Show file nodes</label>
+      <span class="sep">|</span>
+      <label for="depth-select">Depth:</label>
+      <select id="depth-select">
+        <option value="1">1</option>
+        <option value="2" selected>2</option>
+        <option value="3">3</option>
+      </select>
+      <span class="sep">|</span>
+      <button id="btn-fit" class="btn-sm">Fit</button>
+      <button id="btn-reset-graph" class="btn-sm">Reset</button>
+    </div>
+
+    <div class="graph-area">
+      <div id="cy"></div>
+
+      <!-- Node detail panel -->
+      <div id="node-panel" class="side-panel hidden">
+        <div class="panel-header">
+          <span id="panel-title">Node Detail</span>
+          <button id="panel-close" class="btn-icon">✕</button>
+        </div>
+        <div id="panel-body" class="panel-body"></div>
+      </div>
+    </div>
+
+    <div id="graph-legend" class="legend">
+      <span class="legend-item"><span class="dot kind-File"></span> File</span>
+      <span class="legend-item"><span class="dot kind-Class"></span> Class</span>
+      <span class="legend-item"><span class="dot kind-Function"></span> Function</span>
+      <span class="legend-item"><span class="dot kind-Type"></span> Type</span>
+      <span class="legend-item"><span class="dot kind-Test"></span> Test</span>
+      <span class="legend-item"><span class="dot finding-node"></span> Has finding</span>
+    </div>
+  </div>
+
+  <!-- ── Findings View ── -->
+  <div id="view-findings" class="view">
+    <div class="findings-toolbar">
+      <input id="findings-search" type="text" placeholder="Filter by file, rule, title..." autocomplete="off" />
+      <select id="filter-severity">
+        <option value="">All severities</option>
+        <option value="CRITICAL">CRITICAL</option>
+        <option value="HIGH">HIGH</option>
+        <option value="MEDIUM">MEDIUM</option>
+        <option value="LOW">LOW</option>
+      </select>
+      <select id="filter-verdict">
+        <option value="">All verdicts</option>
+        <option value="CONFIRMED">CONFIRMED</option>
+        <option value="FALSE_POSITIVE">FALSE POSITIVE</option>
+        <option value="NEEDS_REVIEW">NEEDS REVIEW</option>
+        <option value="UNANALYSED">UNANALYSED</option>
+      </select>
+      <select id="filter-source">
+        <option value="">All sources</option>
+        <option value="semgrep">Semgrep</option>
+        <option value="hunter">Hunter</option>
+      </select>
+      <button id="btn-apply-filters" class="btn-sm">Apply</button>
+      <button id="btn-clear-filters" class="btn-sm">Clear</button>
+    </div>
+
+    <div id="findings-count" class="findings-count"></div>
+
+    <table id="findings-table">
+      <thead>
+        <tr>
+          <th>Severity</th>
+          <th>Title</th>
+          <th>File</th>
+          <th>Rule</th>
+          <th>Verdict</th>
+          <th>CVSS</th>
+          <th>Source</th>
+        </tr>
+      </thead>
+      <tbody id="findings-tbody"></tbody>
+    </table>
+
+    <!-- Finding detail modal -->
+    <div id="finding-modal" class="modal hidden">
+      <div class="modal-backdrop" id="modal-backdrop"></div>
+      <div class="modal-box">
+        <div class="modal-header">
+          <span id="modal-title"></span>
+          <button id="modal-close" class="btn-icon">✕</button>
+        </div>
+        <div id="modal-body" class="modal-body"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Scan Runs View ── -->
+  <div id="view-runs" class="view">
+    <h2 class="section-title">Scan Run History</h2>
+    <table id="runs-table">
+      <thead>
+        <tr>
+          <th>ID</th>
+          <th>Started</th>
+          <th>Target</th>
+          <th>Model</th>
+          <th>Semgrep</th>
+          <th>Confirmed</th>
+          <th>FP</th>
+          <th>New</th>
+          <th>Recurring</th>
+        </tr>
+      </thead>
+      <tbody id="runs-tbody"></tbody>
+    </table>
+  </div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

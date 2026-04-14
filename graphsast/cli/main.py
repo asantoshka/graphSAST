@@ -889,5 +889,68 @@ def check_llm(
         typer.echo(f"  All available models: {', '.join(available)}")
 
 
+# ──────────────────────────────────────────────────────────────────────────────
+# serve
+# ──────────────────────────────────────────────────────────────────────────────
+
+@app.command("serve")
+def serve_cmd(
+    target: Path = typer.Argument(..., help="Repository to visualize"),
+    db_dir: Optional[Path] = typer.Option(
+        None, "--db-dir", help="Graph DB directory (default: <target>/.graphsast/)"
+    ),
+    host: str = typer.Option("127.0.0.1", "--host", help="Bind host"),
+    port: int = typer.Option(7070, "--port", "-p", help="Bind port"),
+    open_browser: bool = typer.Option(False, "--open", help="Open browser automatically"),
+    verbose: bool = typer.Option(False, "--verbose", "-v"),
+) -> None:
+    """Start the web UI to explore the code graph and findings in a browser.
+
+    Run 'graphsast scan <target>' first to build the graph and collect findings.
+    """
+    try:
+        import uvicorn
+    except ImportError:
+        typer.echo(
+            "Error: uvicorn is not installed. Install the web extras:\n"
+            "  pip install 'graphsast[web]'",
+            err=True,
+        )
+        raise typer.Exit(1)
+
+    _setup_logging(verbose)
+
+    target = target.resolve()
+    if not target.exists():
+        typer.echo(f"Error: {target} does not exist", err=True)
+        raise typer.Exit(1)
+
+    effective_db_dir = (db_dir or _db_dir(target)).resolve()
+    graph_db = effective_db_dir / "graph.db"
+
+    if not graph_db.exists():
+        typer.echo(
+            f"No graph.db found at {graph_db}.\n"
+            "Run 'graphsast scan <target>' first.",
+            err=True,
+        )
+        raise typer.Exit(1)
+
+    from graphsast.web.server import create_app
+
+    web_app = create_app(db_path=graph_db, target=target)
+    url = f"http://{host}:{port}"
+    typer.echo(f"GraphSAST UI → {url}")
+    typer.echo(f"  Graph DB : {graph_db}")
+    typer.echo(f"  Target   : {target}")
+    typer.echo("  Press Ctrl+C to stop.\n")
+
+    if open_browser:
+        import threading, webbrowser
+        threading.Timer(1.0, lambda: webbrowser.open(url)).start()
+
+    uvicorn.run(web_app, host=host, port=port, log_level="warning")
+
+
 if __name__ == "__main__":
     app()
