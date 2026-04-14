@@ -77,6 +77,12 @@ def run_semgrep(target: Path, config: str = "auto", timeout: int = 300) -> list[
         logger.info("semgrep: %d findings", len(findings))
         return findings
 
+    except FileNotFoundError:
+        logger.error(
+            "semgrep not found. Install it with: pip install 'graphsast[scan]'  "
+            "or: pip install semgrep"
+        )
+        return []
     except subprocess.TimeoutExpired:
         logger.error("semgrep timed out after %ds", timeout)
         return []
