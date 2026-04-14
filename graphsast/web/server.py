@@ -29,9 +29,10 @@ def create_app(db_path: Path, target: Path) -> FastAPI:
                 f"graph.db not found at {db_path}. "
                 "Run `graphsast scan <target>` first."
             )
-        conn = sqlite3.connect(str(db_path), check_same_thread=False)
+        conn = sqlite3.connect(str(db_path), timeout=30, check_same_thread=False)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA busy_timeout=5000")
         conn.execute("PRAGMA query_only=ON")
         app.state.db = conn
         app.state.db_path = db_path
