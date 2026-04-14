@@ -33,30 +33,28 @@ def get_stats(request: Request) -> JSONResponse:
     ).fetchall()
     edges_by_kind = {r["kind"]: r["cnt"] for r in edge_rows}
 
-    # Findings summary
-    finding_rows = db.execute(
-        """SELECT
-               severity,
-               llm_verdict,
-               COUNT(*) as cnt
-           FROM findings
-           GROUP BY severity, llm_verdict"""
-    ).fetchall()
-
+    # Findings summary (tables may not exist if no scan has been run yet)
     findings_by_severity: dict[str, int] = {}
     findings_by_verdict: dict[str, int] = {}
     total_findings = 0
-    for r in finding_rows:
-        sev = r["severity"] or "UNKNOWN"
-        verd = r["llm_verdict"] or "UNANALYSED"
-        findings_by_severity[sev] = findings_by_severity.get(sev, 0) + r["cnt"]
-        findings_by_verdict[verd] = findings_by_verdict.get(verd, 0) + r["cnt"]
-        total_findings += r["cnt"]
+    latest_run = None
+    try:
+        finding_rows = db.execute(
+            """SELECT severity, llm_verdict, COUNT(*) as cnt
+               FROM findings GROUP BY severity, llm_verdict"""
+        ).fetchall()
+        for r in finding_rows:
+            sev = r["severity"] or "UNKNOWN"
+            verd = r["llm_verdict"] or "UNANALYSED"
+            findings_by_severity[sev] = findings_by_severity.get(sev, 0) + r["cnt"]
+            findings_by_verdict[verd] = findings_by_verdict.get(verd, 0) + r["cnt"]
+            total_findings += r["cnt"]
 
-    # Latest run
-    latest_run = db.execute(
-        "SELECT * FROM scan_runs ORDER BY id DESC LIMIT 1"
-    ).fetchone()
+        latest_run = db.execute(
+            "SELECT * FROM scan_runs ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+    except Exception:
+        pass  # tables not yet created
 
     return JSONResponse({
         "target": target,
@@ -82,9 +80,12 @@ def list_runs(
 ) -> JSONResponse:
     """Return scan run history, newest first."""
     db = _db(request)
-    rows = db.execute(
-        "SELECT * FROM scan_runs ORDER BY id DESC LIMIT ?", (limit,)
-    ).fetchall()
+    try:
+        rows = db.execute(
+            "SELECT * FROM scan_runs ORDER BY id DESC LIMIT ?", (limit,)
+        ).fetchall()
+    except Exception:
+        rows = []
     return JSONResponse({"runs": [dict(r) for r in rows]})
 
 

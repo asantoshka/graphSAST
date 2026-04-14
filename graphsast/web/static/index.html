@@ -4,8 +4,11 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>GraphSAST</title>
-  <link rel="stylesheet" href="/static/style.css" />
-  <!-- Cytoscape.js from CDN -->
+  <link rel="stylesheet" href="/static/style.css?v=7" />
+  <!-- Highlight.js syntax highlighting -->
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css" />
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+  <!-- Cytoscape.js -->
   <script src="https://cdnjs.cloudflare.com/ajax/libs/cytoscape/3.28.1/cytoscape.min.js"></script>
   <!-- Dagre layout engine -->
   <script src="https://cdnjs.cloudflare.com/ajax/libs/dagre/0.8.5/dagre.min.js"></script>
@@ -59,10 +62,20 @@
       <span class="sep">|</span>
       <button id="btn-fit" class="btn-sm">Fit</button>
       <button id="btn-reset-graph" class="btn-sm">Reset</button>
+      <span class="sep">|</span>
+      <button id="btn-toggle-filetree" class="btn-sm">Files</button>
     </div>
 
     <div class="graph-area">
+      <!-- File tree sidebar -->
+      <div id="file-tree-panel" class="file-tree-panel">
+        <div class="file-tree-header">Files</div>
+        <div id="file-tree" class="file-tree-scroll"></div>
+      </div>
+
       <div id="cy"></div>
+
+      <div id="panel-resize-handle" class="panel-resize-handle hidden"></div>
 
       <!-- Node detail panel -->
       <div id="node-panel" class="side-panel hidden">
@@ -70,7 +83,16 @@
           <span id="panel-title">Node Detail</span>
           <button id="panel-close" class="btn-icon">✕</button>
         </div>
-        <div id="panel-body" class="panel-body"></div>
+        <!-- Tab strip -->
+        <div class="panel-tabs">
+          <button class="panel-tab active" data-tab="meta">Info</button>
+          <button class="panel-tab" data-tab="source">Source</button>
+        </div>
+        <div id="panel-meta" class="panel-body panel-tab-content" style="display:block"></div>
+        <div id="panel-source" class="panel-tab-content" style="display:none;flex-direction:column;overflow:hidden">
+          <div id="source-loading" style="display:none;padding:12px;color:#8892aa;font-size:12px">Loading…</div>
+          <div id="source-code" class="source-code" style="flex:1;overflow:auto"></div>
+        </div>
       </div>
     </div>
 
@@ -148,10 +170,11 @@
       <thead>
         <tr>
           <th>ID</th>
+          <th>Type</th>
           <th>Started</th>
           <th>Target</th>
           <th>Model</th>
-          <th>Semgrep</th>
+          <th>Findings</th>
           <th>Confirmed</th>
           <th>FP</th>
           <th>New</th>
@@ -162,6 +185,6 @@
     </table>
   </div>
 
-  <script src="/static/app.js"></script>
+  <script src="/static/app.js?v=7"></script>
 </body>
 </html>

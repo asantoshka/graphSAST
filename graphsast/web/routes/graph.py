@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from pathlib import Path
 from typing import Any, Optional
 
-from fastapi import APIRouter, Query, Request
+from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
 
 router = APIRouter(tags=["graph"])
@@ -262,3 +263,68 @@ def list_flows(
             "steps": steps,
         })
     return JSONResponse({"flows": flows})
+
+
+@router.get("/source")
+def get_source(
+    request: Request,
+    file_path: str = Query(..., description="Absolute path to the source file"),
+    line_start: int = Query(1, ge=1, description="First line of the node (1-based)"),
+    line_end: int = Query(0, ge=0, description="Last line of the node (0 = same as line_start)"),
+    context: int = Query(3, ge=0, le=20, description="Extra context lines before/after"),
+) -> JSONResponse:
+    """Return source lines for a graph node, with surrounding context.
+
+    Response includes:
+    - ``lines``: list of ``{number, text}`` dicts
+    - ``highlight_start`` / ``highlight_end``: 1-based line numbers of the node body
+    - ``language``: detected language (from file extension)
+    """
+    path = Path(file_path)
+    if not path.exists() or not path.is_file():
+        raise HTTPException(status_code=404, detail=f"File not found: {file_path}")
+
+    # Safety check — only serve files inside the scanned target
+    target = Path(request.app.state.target)
+    try:
+        path.resolve().relative_to(target.resolve())
+    except ValueError:
+        raise HTTPException(status_code=403, detail="File is outside the scanned target")
+
+    if line_end == 0:
+        line_end = line_start
+
+    fetch_start = max(1, line_start - context)
+    fetch_end = line_end + context
+
+    try:
+        raw_lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+    total = len(raw_lines)
+    fetch_end = min(fetch_end, total)
+
+    lines = [
+        {"number": i + 1, "text": raw_lines[i]}
+        for i in range(fetch_start - 1, fetch_end)
+    ]
+
+    ext_map = {
+        ".py": "python", ".js": "javascript", ".ts": "typescript",
+        ".tsx": "typescript", ".jsx": "javascript",
+        ".java": "java", ".go": "go", ".cs": "csharp",
+        ".rb": "ruby", ".rs": "rust", ".cpp": "cpp", ".c": "c",
+        ".yml": "yaml", ".yaml": "yaml", ".json": "json",
+        ".sh": "bash", ".toml": "toml",
+    }
+    language = ext_map.get(path.suffix.lower(), "plaintext")
+
+    return JSONResponse({
+        "file_path": file_path,
+        "language": language,
+        "total_lines": total,
+        "highlight_start": line_start,
+        "highlight_end": line_end,
+        "lines": lines,
+    })

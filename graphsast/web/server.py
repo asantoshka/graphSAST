@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from graphsast.web.routes import findings as findings_router
@@ -53,6 +53,22 @@ def create_app(db_path: Path, target: Path) -> FastAPI:
 
     # Serve static files (JS/CSS)
     app.mount("/static", StaticFiles(directory=str(_STATIC)), name="static")
+
+    _FAVICON_SVG = (
+        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">'
+        '<circle cx="16" cy="16" r="14" fill="#0f1117"/>'
+        '<circle cx="10" cy="12" r="3" fill="#6366f1"/>'
+        '<circle cx="22" cy="12" r="3" fill="#f97316"/>'
+        '<circle cx="16" cy="22" r="3" fill="#22c55e"/>'
+        '<line x1="10" y1="12" x2="22" y2="12" stroke="#4b5563" stroke-width="1.5"/>'
+        '<line x1="10" y1="12" x2="16" y2="22" stroke="#4b5563" stroke-width="1.5"/>'
+        '<line x1="22" y1="12" x2="16" y2="22" stroke="#4b5563" stroke-width="1.5"/>'
+        '</svg>'
+    )
+
+    @app.get("/favicon.ico", include_in_schema=False)
+    async def favicon() -> Response:
+        return Response(content=_FAVICON_SVG, media_type="image/svg+xml")
 
     # SPA catch-all — serve index.html for any non-API route
     @app.get("/", include_in_schema=False)

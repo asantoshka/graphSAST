@@ -64,17 +64,21 @@ def list_findings(
     count_params = list(params)
     params.extend([limit, offset])
 
-    rows = db.execute(
-        f"""SELECT f.* FROM findings f {where}
-            ORDER BY {_SEVERITY_ORDER}, f.file_path, f.line_start
-            LIMIT ? OFFSET ?""",  # nosec B608
-        params,
-    ).fetchall()
+    try:
+        rows = db.execute(
+            f"""SELECT f.* FROM findings f {where}
+                ORDER BY {_SEVERITY_ORDER}, f.file_path, f.line_start
+                LIMIT ? OFFSET ?""",  # nosec B608
+            params,
+        ).fetchall()
 
-    total = db.execute(
-        f"SELECT COUNT(*) FROM findings f {where}",  # nosec B608
-        count_params,
-    ).fetchone()[0]
+        total = db.execute(
+            f"SELECT COUNT(*) FROM findings f {where}",  # nosec B608
+            count_params,
+        ).fetchone()[0]
+    except Exception:
+        # findings table doesn't exist yet (no scan has been run)
+        return JSONResponse({"total": 0, "findings": []})
 
     return JSONResponse({"total": total, "findings": [_finding_row(r) for r in rows]})
 
