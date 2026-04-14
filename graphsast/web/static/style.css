@@ -131,7 +131,6 @@ nav { display: flex; gap: 4px; }
 .btn-icon:hover { color: var(--text); }
 
 /* ── Findings view ── */
-#view-findings { overflow: hidden; }
 .findings-toolbar {
   display: flex; align-items: center; gap: 8px; padding: 8px 12px;
   background: var(--surface); border-bottom: 1px solid var(--border); flex-shrink: 0;
@@ -162,7 +161,7 @@ td.rule-cell { font-family: monospace; font-size: 11px; color: var(--text-muted)
 /* Scrollable findings area */
 #view-findings { display: none; flex-direction: column; }
 #view-findings.active { display: flex; }
-.findings-table-wrap { flex: 1; overflow-y: auto; }
+.findings-table-wrap { flex: 1; overflow-y: auto; min-height: 0; }
 
 /* ── Severity / verdict badges ── */
 .sev { display: inline-block; padding: 2px 7px; border-radius: 3px; font-size: 10px; font-weight: 700; letter-spacing: 0.3px; }
